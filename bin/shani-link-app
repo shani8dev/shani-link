@@ -1,0 +1,6 @@
+#!/usr/bin/python3
+# Shani Link, the app: the phone, the watch and the devices (dev.shani.Link.App)
+import sys
+sys.path.insert(0, "/usr/lib/shani-link")
+from shani_link.app import main
+sys.exit(main())

@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Shani Link
+Comment=Your phone, landline, watch and devices on this computer
+Exec=shani-link-app
+Icon=phone
+Terminal=false
+Categories=Utility;
+Keywords=phone;call;landline;watch;bluetooth;android;sms;nfc;radio;infrared;
+StartupNotify=true
+X-GNOME-UsesNotifications=true

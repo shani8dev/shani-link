@@ -1,0 +1,230 @@
+"""Screen share: the Screen tab of Devices, over `shani_link.screen_stream`.
+
+Moved from Shani Chronoa's tests/test_screen_share.py with the page. There, every
+control went through the assistant's dispatcher and its `screen-share-enabled`
+consent; here a press runs `screen_share.act`, which asks the engine directly -
+the desktop's ScreenCast portal still asks the person what to share.
+
+**The check is slow, and the page is honest about it**: it runs on a worker and
+reports on an idle, so the window keeps turning.
+"""
+
+from __future__ import annotations
+
+import gi  # noqa: E402
+
+gi.require_version("Gtk", "4.0")
+gi.require_version("Adw", "1")
+
+import pytest  # noqa: E402
+from gi.repository import Adw, GLib, Gtk  # noqa: E402
+
+Adw.init()
+
+from shani_link.app import screen_share as surface_mod  # noqa: E402
+
+from _gui import needs_display  # noqa: E402
+
+pytestmark = needs_display
+
+
+def _texts(widget, out=None):
+    if out is None:
+        out = []
+    if isinstance(widget, Gtk.Label):
+        out.append(widget.get_label())
+    child = widget.get_first_child()
+    while child is not None:
+        _texts(child, out)
+        child = child.get_next_sibling()
+    return out
+
+
+def _buttons(widget, out=None):
+    if out is None:
+        out = []
+    if isinstance(widget, Gtk.Button):
+        out.append(widget)
+    child = widget.get_first_child()
+    while child is not None:
+        _buttons(child, out)
+        child = child.get_next_sibling()
+    return out
+
+
+class _App:
+    window = None
+
+
+def _build():
+    page = surface_mod.build(_App())
+    return page, getattr(page, "surface", None)
+
+
+def _pump():
+    context = GLib.MainContext.default()
+    for _ in range(200):
+        if not context.pending():
+            break
+        context.iteration(False)
+
+
+@pytest.fixture
+def dispatched(monkeypatch):
+    """Record what the panel sends through the real dispatch path.
+
+    `act` is stubbed so the test does not need a portal, a stream or a phone -
+    but it is stubbed **at the seam the page calls**, so a page that stopped
+    calling it would send nothing and fail here.
+    """
+    calls = []
+
+    def fake(action):
+        calls.append(action)
+        return f"answer for {action}"
+
+    monkeypatch.setattr(surface_mod, "act", fake)
+    return calls
+
+
+# --- the controls go through the real dispatch path -------------------------
+
+
+def test_check_start_and_stop_all_go_through_act(dispatched):
+    """**Pressed, not called.** `surface._run(...)` is what a first version did.
+
+    It passed with `surface._run` renamed, which is not a test of a button - and
+    this repo has recorded the dead-control defect five times. Emitting
+    `clicked` measures the wiring rather than the behaviour behind it.
+    """
+    page, surface = _build()
+    mine = [b for b in _buttons(page) if b.get_label() in ("Check", "Start", "Stop")]
+    assert len(mine) == 3, [b.get_label() for b in _buttons(page)]
+    for action_button in mine:
+        action_button.emit("clicked")
+        _pump()
+    assert dispatched == ["status", "start", "stop"], dispatched
+
+
+def test_the_answer_is_shown_in_full_not_truncated(dispatched):
+    page, surface = _build()
+    surface._run("status")
+    _pump()
+    shown = " ".join(t for t in _texts(page) if t)
+    assert "answer for status" in shown, shown
+
+
+def test_a_machine_that_cannot_share_says_what_is_missing(monkeypatch):
+    """Not started, and the reason - the engine names the missing package."""
+    from shani_link import screen_stream
+    monkeypatch.setattr(screen_stream, "gstreamer_ready", lambda: (False, "gstreamer has no vp8enc"))
+    monkeypatch.setattr(surface_mod.subprocess, "Popen", lambda *a, **k: pytest.fail("started anyway"))
+    assert "vp8enc" in surface_mod.act("status")
+    assert surface_mod.act("start").startswith("Not started") and "vp8enc" in surface_mod.act("start")
+
+
+def test_no_bluetooth_network_is_its_own_reason(monkeypatch):
+    from shani_link import screen_stream
+    monkeypatch.setattr(screen_stream, "gstreamer_ready", lambda: (True, ""))
+    monkeypatch.setattr(screen_stream, "bluetooth_address", lambda: None)
+    assert "no Bluetooth network" in surface_mod.act("status")
+
+
+def test_start_runs_the_stream_and_stop_ends_that_process(monkeypatch):
+    """The stream is its own process, started once and stopped by its handle."""
+    from shani_link import screen_stream
+    monkeypatch.setattr(screen_stream, "gstreamer_ready", lambda: (True, ""))
+    monkeypatch.setattr(screen_stream, "bluetooth_address", lambda: "192.168.44.2")
+    started = []
+
+    class Proc:
+        def __init__(self, argv, **kw):
+            started.append((argv, kw["env"].get("PYTHONPATH", "")))
+            self.alive = True
+
+        def poll(self):
+            return None if self.alive else 0
+
+        def terminate(self):
+            self.alive = False
+
+        def wait(self, timeout=None):
+            return 0
+
+    monkeypatch.setattr(surface_mod.subprocess, "Popen", Proc)
+    monkeypatch.setitem(surface_mod._PROC, "proc", None)
+    said = surface_mod.act("start")
+    assert "http://192.168.44.2:" in said, said
+    assert started[0][0][1:] == ["-m", "shani_link.screen_stream"], started
+    assert "Already sharing" in surface_mod.act("start") and len(started) == 1
+    assert surface_mod.act("stop").startswith("Stopped")
+    assert surface_mod.act("stop") == "Nothing is being shared."
+
+
+def test_a_broken_engine_is_a_sentence_not_a_freeze(monkeypatch):
+    def boom(*_a, **_k):
+        raise RuntimeError("the launcher would not start")
+    monkeypatch.setattr(surface_mod, "act", boom)
+    page, surface = _build()
+    surface._run("start")
+    _pump()
+    shown = " ".join(t for t in _texts(page) if t)
+    assert "failed" in shown and "launcher" in shown, shown
+
+
+# --- slow, and the window stays alive ---------------------------------------
+
+
+def test_the_buttons_come_back_after_a_slow_action(dispatched):
+    """A 90-second probe must leave the panel usable."""
+    import time
+
+    from shani_link.app import screen_share as mod
+    # drive the worker the way the panel does, then let the idle fire
+    page, surface = _build()
+    monkey = None
+    original = mod.threading.Thread
+    mod.threading.Thread = lambda **kw: original(
+        target=kw["target"], daemon=kw.get("daemon", True), name=kw.get("name"))
+    try:
+        surface._run("status")
+        for _ in range(50):
+            _pump()
+            if surface._busy is False:
+                break
+    finally:
+        mod.threading.Thread = original
+    mine = [b for b in _buttons(page) if b.get_label() in ("Check", "Start", "Stop")]
+    assert len(mine) == 3, [b.get_label() for b in _buttons(page)]
+    for action_button in mine:
+        assert action_button.get_sensitive(), (
+            f"{action_button.get_label()} stayed disabled after the action")
+
+
+def test_the_panel_does_not_freeze_the_loop_during_a_probe(monkeypatch):
+    """The probe runs on a worker - the window must still turn while it runs.
+
+    `quick_ask.py` records that `asyncio.run()` in a GTK handler blocks it, and
+    the same failure here would freeze the window for up to 90 seconds.
+    """
+    page, surface = _build()
+    called = []
+    monkeypatch.setattr(surface_mod, "_pump_noop", lambda: None, raising=False)
+    # A worker is what makes this true; assert one is started rather than that
+    # the work happened inline.
+    started = []
+    real_thread = surface_mod.threading.Thread
+
+    class _Recorder:
+        def __init__(self, **kwargs):
+            started.append(kwargs.get("name"))
+
+        def start(self):
+            pass
+
+    surface_mod.threading.Thread = _Recorder
+    try:
+        surface._run("status")
+    finally:
+        surface_mod.threading.Thread = real_thread
+    assert started == ["link-screen-share"], started

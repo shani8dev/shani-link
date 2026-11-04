@@ -23,8 +23,18 @@ Chronoa keeps thin skills that call this package:
 
 The parts that hold a connection open (the line, the phone link, the watch, the
 Bluetooth roles, receiving files) run in the service; the rest is a library
-(`shani_link`) the app, the shell and Chronoa's skills import. The app, Shani
-Link, has the pages: Phone, Watch, Devices, Radio, NFC and Remote.
+(`shani_link`) the app, the shell and Chronoa's skills import.
+
+## The app
+`shani-link-app` (`dev.shani.Link.App`, "Shani Link") is the same plumbing for a
+person: Phone (the landline dialer, the paired phone's calls, texts, contacts,
+music and files), Watch, Devices (paired devices, Android over adb, the phone
+link, this screen on the phone - and Connect a device), Radio, NFC, Remote, and
+Background. It has no assistant consent: a button is pressed by the person it
+acts for. What runs with the window closed has a plain switch on Background
+(`shani_link/settings.py`, set through the service so it applies at once).
+`shani-link-app --page=watch` opens a page; `--connect[=bluetooth|android|kdeconnect]`
+opens Connect a device.
 
 Video is a local socket, not D-Bus: `VideoSocket()` names it; each frame is a
 12-byte header (width, height, length; big-endian u32) and RGB24.
@@ -33,9 +43,12 @@ Video is a local socket, not D-Bus: `VideoSocket()` names it; each frame is a
 ```
 shani_link/landline/   the line: provisioning, SIP, RTP audio (pw-cat), video
 shani_link/service.py  the D-Bus service
-bin/shani-link         its launcher
-data/                  the systemd user unit and D-Bus activation file
-tests/                 a fake JioFiber router; the service on a private bus
+shani_link/app/        the app's window and pages (moved from Chronoa's device panels)
+bin/shani-link         the service's launcher
+bin/shani-link-app     the app's launcher
+data/                  the systemd user unit, D-Bus activation file, the app's desktop file
+tests/                 a fake JioFiber router, fake BlueZ/adb/KDE Connect; the service on a
+                       private bus; the app's pages on a private Broadway display
 ```
 Settings live in `~/.config/shani-link/` (carried over once from
 `~/.config/shani-chronoa/`, where the landline began).
@@ -43,4 +56,6 @@ Settings live in `~/.config/shani-link/` (carried over once from
 ## Tests
 `python3 -m pytest` - everything runs against fakes: a fake router (provisioning,
 SIP digest, RTP both ways) and a private session bus. Nothing reaches the real
-line, Bluetooth or the person's own config.
+line, Bluetooth or the person's own config. tests/conftest.py starts a private
+Broadway display for the app's pages (GTK tests skip without `gtk4-broadwayd`;
+the person's own display is never used) and points both buses nowhere.

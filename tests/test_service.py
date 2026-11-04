@@ -48,3 +48,17 @@ gdbus call --session -d dev.shani.Link -o /dev/shani/Link -m dev.shani.Link.Sett
 ''', tmp_path)
     assert '\\"watch-weather-enabled\\": true' in out or '"watch-weather-enabled": true' in out, out
     assert (tmp_path / "config" / "shani-link" / "settings.json").exists()
+
+
+def test_a_live_call_crosses_the_bus_as_its_fields_not_a_repr():
+    """`Calls` carried `str(Call)` - "<shani_link.landline.ua.Call object at ...>" -
+    so the app's Hold/Swap/Merge buttons could not tell a held call from an
+    active one. Each call is now its number, name, state and whether it is held."""
+    sys.path.insert(0, ROOT)
+    from shani_link.landline.ua import Call
+    from shani_link.service import call_view
+    call = Call("id1", "tag", True, "+911234")
+    call.state, call.held, call.name = "active", True, "Amma"
+    view = call_view(call)
+    assert json.loads(json.dumps(view)) == {"number": "+911234", "name": "Amma", "state": "active",
+                                            "held": True, "outgoing": True}

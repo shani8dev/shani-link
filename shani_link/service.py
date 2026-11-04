@@ -82,6 +82,15 @@ def _json(value) -> str:
     return json.dumps(value, default=str)
 
 
+def call_view(call) -> dict:
+    """One live call as JSON can carry it. The engine's `Call` is an object (its
+    SIP dialog, its RTP session); `json.dumps(default=str)` turned each into a
+    string like "<Call object at 0x...>", so a client could read nothing of it."""
+    return {"number": getattr(call, "number", ""), "name": getattr(call, "name", ""),
+            "state": getattr(call, "state", ""), "held": bool(getattr(call, "held", False)),
+            "outgoing": bool(getattr(call, "outgoing", False))}
+
+
 class VideoFanout:
     """Decoded pictures to every viewer connected to the socket."""
 
@@ -233,7 +242,7 @@ class Service:
         if method == "Merge":
             return b(landline.merge())
         if method == "Calls":
-            return s(_json(landline.calls()))
+            return s(_json([call_view(c) for c in landline.calls()]))
         if method == "History":
             return s(_json(landline.history()))
         if method == "ResolveName":
