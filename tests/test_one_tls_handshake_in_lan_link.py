@@ -42,11 +42,11 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "usr/lib/shani-chronoa"))
+sys.path.insert(0, str(ROOT))
 
 from shani_link import lan_link  # noqa: E402
 
-SOURCE = ROOT / "usr/lib/shani-chronoa/shani_chronoa/lan_link.py"
+SOURCE = ROOT / "shani_link/lan_link.py"
 
 
 def _bio_sites():
@@ -73,11 +73,69 @@ def _bio_sites():
             if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef)) and builds(m)]
 
 
+def test_no_public_function_drives_a_handshake():
+    """**The public surface drives none.** `Link` is the only way in.
+
+    Counting the two *sites* in the module and demanding one was my first
+    version, and it failed against correct code: there are two, and the second is
+    `_exchange`, a private helper whose own docstring says it exists so that the
+    first plugin packet is a one-liner rather than a re-derivation of the TLS
+    dance — and that "none of them have been written yet". That one is a declared
+    template and stays.
+
+    What must not come back is a *public* function doing the same job a second
+    way. `identity_exchange` was exactly that, and it had no caller.
+    """
+    public = [n for kind, n in _bio_sites() if kind == "function"
+              and not n.startswith("_")]
+    assert public == [], (
+        f"public function(s) {public} hand-drive a TLS handshake; Link already "
+        f"does this, keeps the whole peer identity, and carries the expect_peer "
+        f"pinning defence a standalone copy has no way to express")
+    assert not hasattr(lan_link, "identity_exchange"), (
+        "the duplicate handshake is back; if it has a caller now, that caller "
+        "needs a reason to exist rather than the capabilities")
 
 
+def test_every_handshake_site_is_accounted_for():
+    """So the assertion above cannot be satisfied by accident as the module grows.
+
+    Two sites, both named: the live one and the documented template. A third would
+    be a new copy of a handshake whose roles this module's docstring records were
+    "got wrong first".
+    """
+    assert sorted(_bio_sites()) == [("function", "_exchange"),
+                                   ("method", "Link.connect")], _bio_sites()
 
 
+def test_the_removed_function_is_really_gone():
+    """Not merely uncalled - gone, so it cannot be found and used by accident."""
+    names = [n.name for n in ast.walk(ast.parse(SOURCE.read_text(encoding="utf-8")))
+             if isinstance(n, ast.FunctionDef)]
+    assert "identity_exchange" not in names, names
 
 
+def test_capabilities_reach_the_caller_without_a_handshake():
+    """**Why the removal was safe.** The capability list the deleted function was
+    famous for is in the plaintext discovery datagram.
+
+    This runs `parse_identity` over a datagram `identity_packet` built - the same
+    path discovery uses, no socket and no TLS.
+    """
+    packet = lan_link.identity_packet(name="a phone", device_type="phone")
+    import json
+
+    parsed = lan_link.parse_identity((json.dumps(packet) + "\n").encode())
+
+    assert parsed is not None, "a well-formed identity was refused"
+    for field in ("incomingCapabilities", "outgoingCapabilities"):
+        assert field in parsed, f"{field} missing from the discovery identity: {parsed}"
 
 
+def test_the_real_test_still_reads_capabilities_out_of_one():
+    """The claim above is not re-derived here - it is the control that says the
+    thing it replaced really did answer that question."""
+    real = (ROOT / "tests/test_lan_link.py").read_text(encoding="utf-8")
+    assert 'incomingCapabilities' in real and "kdeconnect.battery" in real, (
+        "tests/test_lan_link.py no longer asserts a capability out of an "
+        "identity; this file's central claim would be resting on nothing")
