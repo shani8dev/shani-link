@@ -61,12 +61,32 @@ class BluetoothPhoneError(Exception):
 
 
 def _run(argv: "list[str]") -> subprocess.CompletedProcess:
-    return subprocess.run(argv, capture_output=True, text=True, timeout=15, check=False)
+    """A bluetoothctl that does not answer is "no Bluetooth", not an error to
+    raise through whatever window asked (the Devices page did not open for 15 s
+    and then failed, measured with no bluetoothd)."""
+    try:
+        return subprocess.run(argv, capture_output=True, text=True, timeout=15, check=False)
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(argv, 124, "", "bluetoothctl did not answer")
+
+
+def bluez_running() -> bool:
+    """Is BlueZ on the system bus? Asked of the bus itself - instant - because
+    bluetoothctl with no bluetoothd waits for one instead of failing."""
+    try:
+        from gi.repository import Gio, GLib
+        bus = Gio.bus_get_sync(Gio.BusType.SYSTEM, None)
+        reply = bus.call_sync("org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus",
+                              "NameHasOwner", GLib.Variant("(s)", ("org.bluez",)), None,
+                              Gio.DBusCallFlags.NONE, 1000, None)
+        return bool(reply.unpack()[0])
+    except Exception:  # noqa: BLE001 - no system bus is no Bluetooth
+        return False
 
 
 def phones() -> "list[tuple[str, str, bool]]":
     """(address, name, connected) for every paired device bluez calls a phone."""
-    if not shutil.which("bluetoothctl"):
+    if not shutil.which("bluetoothctl") or not bluez_running():
         return []
     out = []
     for line in (_run(["bluetoothctl", "devices", "Paired"]).stdout or "").splitlines():

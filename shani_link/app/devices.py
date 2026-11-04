@@ -72,9 +72,9 @@ STATES = (
 #: state, so the three messages this panel is judged on cannot drift apart from
 #: each other or from the state names above.
 HEADLINE = {
-    STATE_NO_LINK: "No phone link is installed",
-    STATE_LINK_DOWN: "The phone link did not answer",
-    STATE_NONE_PAIRED: "No device is paired",
+    STATE_NO_LINK: "No phone connected yet",
+    STATE_LINK_DOWN: "Your phone link is not answering",
+    STATE_NONE_PAIRED: "Nothing paired yet",
 }
 
 #: state -> the status word it is, beside `State.health`. `STATE_PERMITTED` is
@@ -98,27 +98,26 @@ HEALTH = {
 #: full explanation. One clause above, one paragraph below, and the paragraph is
 #: read once.
 HEALTH_SUMMARY = {
-    STATE_NO_LINK: "neither GSConnect nor kdeconnect-cli is installed here",
-    STATE_LINK_DOWN: "a backend is installed but would not answer",
-    STATE_NONE_PAIRED: "the link answered, with nothing paired to it",
+    STATE_NO_LINK: "no phone paired over Bluetooth, and no desktop phone app",
+    STATE_LINK_DOWN: "the phone app on this computer did not answer",
+    STATE_NONE_PAIRED: "nothing is paired yet",
 }
 
 BODY = {
     STATE_NO_LINK: (
-        "This machine has neither backend phone.py knows about: no GSConnect (the "
-        "GNOME Shell extension, which also needs its 'gjs' runtime) and no "
-        "kdeconnect-cli (Plasma). That is a machine with no phone link, not a "
-        "machine with no phone."
+        "Pair your phone over Bluetooth with Connect a device below - calls, texts and "
+        "music then work here. Or open the Phone link tab: install the KDE Connect app "
+        "on your phone (Android or iPhone), be on the same Wi-Fi, and pair - nothing "
+        "else is needed on this computer."
     ),
     STATE_LINK_DOWN: (
-        "A backend is installed but would not answer, which is a different fact "
-        "from no backend and a different fact again from a paired device. On GNOME "
-        "that usually means the GSConnect extension is switched off."
+        "The phone app on this computer (KDE Connect or GSConnect) is installed but did "
+        "not answer. Try Refresh; if it stays like this, restart that app - or use the "
+        "Phone link tab, which works without it."
     ),
     STATE_NONE_PAIRED: (
-        "The link answered and has nothing paired to it. Pair a phone in "
-        "GSConnect or KDE Connect, or with kdeconnect-cli on Plasma, and it "
-        "appears here."
+        "Nothing is paired with this computer yet. Use Connect a device to pair a phone, "
+        "a watch, headphones or a keyboard."
     ),
 }
 
@@ -227,9 +226,10 @@ def _stamp(read_at: float) -> Gtk.Widget:
 def _backend() -> Optional[str]:
     """`phone.backend()`, or None if there is none.
 
-    `backend()` is a `which` over `kdeconnect-cli` plus a glob for GSConnect's
-    daemon - no D-Bus and no subprocess - so a failure here is a filesystem that
-    could not be searched, and reporting that as "no phone link" would be the
+    `backend()` is a `which` over `kdeconnect-cli`, a glob for GSConnect's
+    daemon, and - for plain Bluetooth - BlueZ's own presence on the bus before
+    any bluetoothctl (which waits forever for a missing daemon), so a failure
+    here is a filesystem or bus that could not be asked, and reporting that as "no phone link" would be the
     confident wrong answer this panel exists to avoid. Such a failure is reported
     as an undetermined backend and the read is attempted anyway.
     """

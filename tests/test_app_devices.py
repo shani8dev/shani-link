@@ -281,9 +281,11 @@ class TestTheHonestStates:
         widget = devices.build(_app())
         said = _said(widget)
         assert devices.HEADLINE[devices.STATE_NO_LINK] in said, said
-        assert "kdeconnect-cli" in said, said
-        assert "GSConnect" in said, said
-        assert "not a machine with no phone" in said, said
+        # the way forward, in words a person acts on: pair over Bluetooth here, or the
+        # built-in phone link (the KDE Connect app on the phone, nothing on this one)
+        assert "Connect a device" in said and "Phone link" in said, said
+        assert "KDE Connect app on your phone" in said, said
+        assert "phone.py" not in said and "backend" not in said, "developer words on screen: " + said
         assert "devices" not in phone.calls, (
             f"devices were asked for with no backend installed: {phone.calls}"
         )
@@ -305,7 +307,7 @@ class TestTheHonestStates:
         widget = devices.build(_app())
         said = _said(widget)
         assert devices.HEADLINE[devices.STATE_NONE_PAIRED] in said, said
-        assert "has nothing paired to it" in said, said
+        assert "Nothing is paired with this computer yet" in said, said
         assert _device_rows(widget) == [], "a row appeared with nothing paired"
 
     def test_the_four_states_render_as_four_different_pages(self, monkeypatch):
