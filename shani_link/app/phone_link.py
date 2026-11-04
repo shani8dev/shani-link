@@ -1,6 +1,8 @@
 """This computer on the phone's own link: the Phone link tab, over `lan_link`.
 
-The KDE Connect LAN protocol: see what is on the network, pair, push a file.
+The KDE Connect LAN protocol: see what is on the network, make this computer
+findable, pair, push a file (the actions are `shani_link.lan_phone`'s, which
+Chronoa's `lan_phone` skill also calls).
 Moved here from Shani Chronoa, minus the assistant's `lan-phone-enabled`
 consent: looking for phones and sending a file happen when the person presses
 the button, and that is the asking.
@@ -26,7 +28,7 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import GLib, Gtk
 
-from shani_link import lan_link
+from shani_link import lan_link, lan_phone
 from shani_link.app import common
 from shani_link.app.common import plural
 
@@ -44,18 +46,9 @@ NOT_PAIRED_WHY = ("Pair one to send it files. The phone's owner taps Accept on i
 
 
 def _hosts() -> str:
-    """The phone this computer last saw, or "".
-
-    The same remembered address the skill reads, so the panel and the tool do
-    not each hold a different idea of which phone they are talking about. It
-    lives in one file and is overwritten by discovery.
-    """
-    from shani_link import paths
-    path = paths.state_home() / "kdeconnect" / "device-address"
-    try:
-        return path.read_text(encoding="utf-8").strip() if path.is_file() else ""
-    except OSError:
-        return ""
+    """The phone this computer last saw, or "" - `lan_phone`'s one remembered
+    address, which Chronoa's skill reads too."""
+    return lan_phone.default_host()
 
 
 def _off_thread(work: Callable[[], Any],
@@ -155,6 +148,11 @@ class _PhoneLinkView(Gtk.Box):
         _label(self.find, "Look for phones on this network")
         self.find.connect("clicked", self._on_find)
         box.append(self.find)
+        self.announce = Gtk.Button(label="Make this computer findable")
+        self.announce.set_tooltip_text("Tell phones on this network that this computer is here")
+        _label(self.announce, "Make this computer findable by a phone's KDE Connect app")
+        self.announce.connect("clicked", self._on_announce)
+        box.append(self.announce)
         self.find_note = _dim("Nothing has been looked for yet.")
         box.append(self.find_note)
         return box
@@ -186,6 +184,18 @@ class _PhoneLinkView(Gtk.Box):
             _remember(self._devices[0].get("address", ""))
         self._refresh_list()
         self._refresh_status()
+
+    def _on_announce(self, _button: Gtk.Button) -> None:
+        """Say "this computer is here" on the network, so the phone's KDE
+        Connect app lists it and offers to pair from there."""
+        self.announce.set_sensitive(False)
+        self.find_note.set_label("Announcing this computer on the network...")
+
+        def done(result) -> None:
+            self.announce.set_sensitive(True)
+            self.find_note.set_label(f"Could not announce this computer: {result}"
+                                     if isinstance(result, Exception) else str(result))
+        _off_thread(lan_phone.announce, done)
 
     def show_devices(self, entries: List[dict]) -> None:
         """Put a discovered list on screen. **The seam a test needs.**
@@ -272,15 +282,7 @@ class _PhoneLinkView(Gtk.Box):
 
 
 def _remember(address: str) -> None:
-    if not address:
-        return
-    from shani_link import paths
-    try:
-        path = paths.state_home() / "kdeconnect" / "device-address"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(address, encoding="utf-8")
-    except OSError as exc:
-        logger.info("could not remember the device address: %s", exc)
+    lan_phone.remember(address)
 
 
 def _replace(container: Gtk.Widget, widget: Gtk.Widget) -> None:
@@ -315,8 +317,8 @@ def build(app: Any) -> Gtk.Widget:
     view = _PhoneLinkView(app)
     page, set_content = common.surface(TITLE, SUBTITLE)
     set_content(view)
-    for name in ("find", "find_note", "show_devices", "_refresh_status",
-                 "_refresh_list", "_on_find", "_on_send"):
+    for name in ("find", "find_note", "announce", "show_devices", "_refresh_status",
+                 "_refresh_list", "_on_find", "_on_send", "_on_announce"):
         setattr(page, name, getattr(view, name))
     page.status = view.status_recorder.status
     return page

@@ -28,8 +28,9 @@ Bluetooth roles, receiving files) run in the service; the rest is a library
 ## The app
 `shani-link-app` (`dev.shani.Link.App`, "Shani Link") is the same plumbing for a
 person: Phone (the landline dialer, the paired phone's calls, texts, contacts,
-music and files), Watch, Devices (paired devices, Android over adb, the phone
-link, this screen on the phone - and Connect a device), Radio, NFC, Remote, and
+music, files, and its keys as a Bluetooth remote), Watch, Devices (paired
+devices, Android over adb - battery, screenshot, a link or a file to the phone -
+the phone link, this screen on the phone - and Connect a device), Radio, NFC, Remote, and
 Background. It has no assistant consent: a button is pressed by the person it
 acts for. What runs with the window closed has a plain switch on Background
 (`shani_link/settings.py`, set through the service so it applies at once).

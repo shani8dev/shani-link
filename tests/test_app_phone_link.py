@@ -166,6 +166,29 @@ elif case == "pair_button":
     find_button(page, "Pair a phone").emit("clicked")
     say(activated=App.activated)
 
+elif case in ("announce", "announce_fails"):
+    # the button, pressed, with the network stood in for: `lan_link.announce`
+    # is what `lan_phone.announce` sends through
+    from gi.repository import GLib
+    import time as _t
+    from shani_link import lan_link
+    asked = []
+    if case == "announce":
+        lan_link.announce = lambda name, tcp_port=1716: (asked.append(name), (True, ""))[1]
+    else:
+        lan_link.announce = lambda name, tcp_port=1716: (asked.append(name), (False, "no route"))[1]
+    page = phone_link.build(App())
+    page.announce.emit("clicked")
+    context = GLib.MainContext.default()
+    deadline = _t.time() + 15
+    while _t.time() < deadline:
+        while context.pending():
+            context.iteration(False)
+        if page.announce.get_sensitive():
+            break
+        _t.sleep(0.05)
+    say(note=page.find_note.get_label(), asked=asked, buttons=buttons(page))
+
 else:
     say(error="unknown case " + case)
 ''' % {"pkg": str(PKG)}
@@ -269,3 +292,20 @@ class TestPairing:
     def test_pair_a_phone_opens_connect_a_device_on_kde_connect(self, broadway, tmp_path):
         out = _run(broadway, "pair_button", tmp_path)
         assert out["activated"] == [["connect-device", "kdeconnect"]], out
+
+
+class TestMakeThisComputerFindable:
+    """The skill's `announce`, now a button: a phone's KDE Connect app lists this
+    computer and offers to pair from its side."""
+
+    def test_the_button_announces_and_says_what_the_phone_will_do(self, broadway, tmp_path):
+        out = _run(broadway, "announce", tmp_path)
+        assert "Make this computer findable" in out["buttons"], out["buttons"]
+        assert len(out["asked"]) == 1, out
+        assert out["note"].startswith(f"Announced this computer as '{out['asked'][0]}'"), out["note"]
+        assert "will now offer to pair" in out["note"], out["note"]
+
+    def test_a_network_that_carries_nothing_is_said_in_words(self, broadway, tmp_path):
+        out = _run(broadway, "announce_fails", tmp_path)
+        assert out["note"] == ("Could not announce this computer (no route). "
+                               "The network may not carry broadcast."), out["note"]

@@ -2,7 +2,9 @@
 
 Calls (a dialer shaped like a car's, answer, hang up, hold, swap, merge, the
 call's picture, recent calls), messages (conversations, a thread, reply),
-contacts (search, call, text), the phone's music, and files both ways. It adds
+contacts (search, call, text), the phone's music, files both ways, and the
+remote (this computer as the phone's Bluetooth keyboard: its camera shutter,
+media and volume keys, through `shani_link.phone_remote`). It adds
 no transport: the landline is the service's (`line.py`, over D-Bus), the phone
 is `shani_link.phone` (GSConnect, KDE Connect, or plain Bluetooth through
 `phone_bluez`), and Bluetooth call audio is `shani_link.bt_telephony`.
@@ -205,7 +207,8 @@ class PhonePanel:
     #: and this panel cannot afford it.
     #:
     #: With the floor removed the five tabs need **389px** and the panel
-    #: measures 413 - inside the budget, with room to spare. The buttons are
+    #: measures 413 - inside the budget, with room to spare. The sixth tab
+    #: (Remote) brings the tab bar to 476px, measured the same way: inside 480. The buttons are
     #: then as wide as their labels, which is how a tab bar looks in most
     #: applications; GTK keeps the selection border inside the button, so
     #: choosing a tab does not move the others.
@@ -253,7 +256,8 @@ stackswitcher button {
                                      ("messages", "Messages", self.messages_tab),
                                      ("contacts", "Contacts", self.contacts_tab),
                                      ("music", "Music", self.music_tab),
-                                     ("files", "Files", self.files_tab)):
+                                     ("files", "Files", self.files_tab),
+                                     ("remote", "Remote", self.remote_tab)):
             stack.add_titled(builder(), name, title)
         set_content(common.scrolled(body))
         self.find_phone()
@@ -1305,6 +1309,78 @@ stackswitcher button {
             ok, why = result
             self.file_note.set_text(f"Sent {name} to {dev.name}." if ok else f"Not sent: {why}")
         _in_thread(lambda: ph.act(dev, "share", path), done)
+
+
+    # --- remote ----------------------------------------------------------------
+
+    #: (label, icon, key of `phone_remote.KEYS`) - the keys a person reaches for
+    REMOTE_KEYS = (("Take a photo", "camera-photo-symbolic", "shutter"),
+                   ("Previous", "media-skip-backward-symbolic", "previous"),
+                   ("Play or pause", "media-playback-start-symbolic", "play_pause"),
+                   ("Next", "media-skip-forward-symbolic", "next"),
+                   ("Volume down", "audio-volume-low-symbolic", "volume_down"),
+                   ("Volume up", "audio-volume-high-symbolic", "volume_up"))
+    REMOTE_SWITCH = "phone-remote-enabled"
+    REMOTE_OFF = ("Turn on \u201cPhone as a remote\u201d on the Background page, then pair "
+                  "\u201cChronoa Remote\u201d from the phone's Bluetooth settings, to press "
+                  "its camera shutter and media keys from here.")
+
+    def remote_tab(self) -> Gtk.Widget:
+        """The phone's keys, pressed from here - only while its switch is on.
+
+        The switch is read each time the tab is shown, so turning it on on the
+        Background page and coming back is enough.
+        """
+        box = common.page_body(10)
+        self.remote_off = common.page_body(8)
+        self.remote_off.append(_label(self.REMOTE_OFF, dim=True))
+        self.remote_off.append(_button("Open Background", self._open_background))
+        box.append(self.remote_off)
+        self.remote_keys = common.page_body(10)
+        grid = Gtk.FlowBox(selection_mode=Gtk.SelectionMode.NONE, max_children_per_line=3,
+                           column_spacing=6, row_spacing=6, homogeneous=True)
+        self.remote_buttons = {}
+        for label, icon, key in self.REMOTE_KEYS:
+            button = Gtk.Button(child=Adw.ButtonContent(icon_name=icon, label=label),
+                                tooltip_text=label)
+            button.connect("clicked", lambda _b, k=key: self.remote_press(k))
+            self.remote_buttons[key] = button
+            grid.append(button)
+        self.remote_keys.append(grid)
+        self.remote_note = _label("In the phone's camera app, Take a photo presses the shutter.", dim=True)
+        self.remote_keys.append(self.remote_note)
+        box.append(self.remote_keys)
+        box.connect("map", lambda *_a: self.refresh_remote())
+        self.refresh_remote()
+        return box
+
+    def _remote_on(self) -> bool:
+        switches = getattr(self.app, "switches", None)
+        try:
+            if switches is None:
+                from shani_link import settings
+                switches = settings.Settings()
+            return bool(switches.get_bool(self.REMOTE_SWITCH, False))
+        except Exception:  # noqa: BLE001 - unreadable is off
+            logger.debug("could not read %s", self.REMOTE_SWITCH, exc_info=True)
+            return False
+
+    def refresh_remote(self) -> None:
+        on = self._remote_on()
+        self.remote_keys.set_visible(on)
+        self.remote_off.set_visible(not on)
+
+    def _open_background(self) -> None:
+        show = getattr(self.app, "show_page", None)
+        if callable(show):
+            show("background")
+
+    def remote_press(self, key: str) -> None:
+        from shani_link import phone_remote
+        self.remote_note.set_text("Pressing...")
+        _in_thread(lambda: phone_remote.press(key),
+                   lambda r: self.remote_note.set_text(
+                       f"Not pressed: {r}" if isinstance(r, Exception) else str(r)))
 
 
 def build(app: Any) -> Gtk.Widget:

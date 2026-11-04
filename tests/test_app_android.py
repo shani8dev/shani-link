@@ -347,3 +347,95 @@ def test_every_state_has_its_own_headline():
     for state in (a.STATE_PERMITTED, a.STATE_NO_ADB, a.STATE_NONE):
         assert a.HEADLINE[state]
         assert a.HEADLINE[state] != state
+
+
+# --- what a person does with a ready phone ---------------------------------------
+
+class TestThePhoneActions:
+    """Each button runs one verb of `shani_link.android` and shows its sentence."""
+
+    def _page(self, monkeypatch):
+        from shani_link import android as engine
+        monkeypatch.setattr(engine, "available", lambda: True)
+        _answers(monkeypatch, TWO_DEVICES)
+        page = a.build(App())
+        _run(page)
+        return page, engine
+
+    def _settle(self, actions, busy):
+        from _gui import pump
+        pump(lambda: actions.note.get_text() and actions.note.get_text() != busy, 3)
+        return actions.note.get_text()
+
+    def test_only_a_ready_phone_gets_buttons(self, monkeypatch):
+        page, _engine = self._page(monkeypatch)
+        assert list(page.actions) == ["emulator-5554"], "an unauthorised phone cannot be acted on"
+        text = _labels(page)
+        assert "Battery and storage" in text and "Take a screenshot" in text
+
+    def test_battery_and_storage(self, monkeypatch):
+        page, engine = self._page(monkeypatch)
+        calls = []
+        monkeypatch.setattr(engine, "info", lambda serial: calls.append(serial) or "Google Pixel 8, battery 76%.")
+        actions = page.actions["emulator-5554"]
+        actions.info_button.emit("clicked")
+        assert self._settle(actions, "Asking sdk gphone64...") == "Google Pixel 8, battery 76%."
+        assert calls == ["emulator-5554"]
+
+    def test_screenshot(self, monkeypatch):
+        page, engine = self._page(monkeypatch)
+        calls = []
+        monkeypatch.setattr(engine, "screenshot",
+                            lambda serial: calls.append(serial) or "Saved the phone's screen to ~/Pictures/p.png.")
+        actions = page.actions["emulator-5554"]
+        actions.shot_button.emit("clicked")
+        assert "Saved the phone's screen" in self._settle(actions, "Taking a screenshot - keep the phone unlocked...")
+        assert calls == ["emulator-5554"]
+
+    def test_open_a_link_needs_a_link_then_opens_it(self, monkeypatch):
+        page, engine = self._page(monkeypatch)
+        calls = []
+        monkeypatch.setattr(engine, "open_url", lambda serial, url: calls.append((serial, url)) or f"Opened {url} on the phone.")
+        actions = page.actions["emulator-5554"]
+        actions.link_button.emit("clicked")
+        assert actions.note.get_text().startswith("Type a link first") and calls == []
+        actions.link_entry.set_text("https://shani.dev")
+        actions.link_button.emit("clicked")
+        assert self._settle(actions, "Opening https://shani.dev on the phone...") == \
+            "Opened https://shani.dev on the phone."
+        assert calls == [("emulator-5554", "https://shani.dev")]
+
+    def test_send_a_file(self, monkeypatch):
+        page, engine = self._page(monkeypatch)
+        calls = []
+        monkeypatch.setattr(engine, "push", lambda serial, path: calls.append((serial, path)) or "Copied f.txt to the phone (/sdcard/Download/).")
+        actions = page.actions["emulator-5554"]
+        assert actions.send_button.get_label() == "Send a file..."
+        actions.send_file("/tmp/f.txt")
+        assert self._settle(actions, "Sending f.txt...") == "Copied f.txt to the phone (/sdcard/Download/)."
+        assert calls == [("emulator-5554", "/tmp/f.txt")]
+
+    def test_list_apps(self, monkeypatch):
+        page, engine = self._page(monkeypatch)
+        monkeypatch.setattr(engine, "apps", lambda serial: "1 installed app(s):\n- com.whatsapp")
+        actions = page.actions["emulator-5554"]
+        actions.apps_button.emit("clicked")
+        assert "com.whatsapp" in self._settle(actions, "Listing the apps...")
+
+    def test_an_engine_failure_is_said_in_words(self, monkeypatch):
+        page, engine = self._page(monkeypatch)
+
+        def broken(serial):
+            raise RuntimeError("the cable came out")
+        monkeypatch.setattr(engine, "info", broken)
+        actions = page.actions["emulator-5554"]
+        actions.info_button.emit("clicked")
+        assert self._settle(actions, "Asking sdk gphone64...") == \
+            "Could not reach the phone: the cable came out"
+
+    def test_no_adb_is_said_by_the_button(self, monkeypatch):
+        page, engine = self._page(monkeypatch)
+        monkeypatch.setattr(engine, "available", lambda: False)
+        actions = page.actions["emulator-5554"]
+        actions.shot_button.emit("clicked")
+        assert self._settle(actions, "Taking a screenshot - keep the phone unlocked...") == engine.NO_ADB

@@ -19,6 +19,12 @@ holds their messages, their photos and their location; a settings panel that
 offered a shell prompt at it would be a very different thing from this. So there
 is no `adb shell` button here.
 
+**What a person does with a ready phone** sits under its row: battery and
+storage, a screenshot saved to ~/Pictures, a link opened on the phone, a file
+sent to the phone's Download folder, and the apps its owner installed. Each is
+one verb of `shani_link.android` (the engine Chronoa's skill also calls), run
+off the main loop, and its answer is shown as the sentence the engine says.
+
 **The phone is the first consent, and it is not ours.** `adb` only reaches a
 device whose owner turned on USB debugging and accepted this computer's key. A
 machine with no such device is not a broken panel, it is a phone that has not
@@ -41,6 +47,7 @@ gi.require_version("Gtk", "4.0")
 
 from gi.repository import GLib, Gtk  # type: ignore
 
+from shani_link import android as engine
 from shani_link.app import common
 
 logger = logging.getLogger(__name__)
@@ -295,6 +302,92 @@ def _device_row(serial: str, state: str, model: str = "") -> Gtk.Widget:
     return _row(serial, subtitle)
 
 
+class PhoneActions(Gtk.Box):
+    """The buttons for one ready phone, each through `shani_link.android`.
+
+    The engine is looked up when a button is pressed (`engine.info`, not a
+    reference taken at build time), so a test that stubs the engine's verb
+    stubs what the button runs.
+    """
+
+    def __init__(self, serial: str, model: str = "") -> None:
+        super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        self.serial = serial
+        self.name = model or serial
+        for side in ("start", "end"):
+            getattr(self, f"set_margin_{side}")(12)
+        buttons = Gtk.FlowBox(selection_mode=Gtk.SelectionMode.NONE,
+                              max_children_per_line=4, column_spacing=6, row_spacing=6)
+        self.info_button = self._button("Battery and storage", self.on_info)
+        self.shot_button = self._button("Take a screenshot", self.on_screenshot)
+        self.send_button = self._button("Send a file...", self.pick_file)
+        self.apps_button = self._button("List apps", self.on_apps)
+        for button in (self.info_button, self.shot_button, self.send_button, self.apps_button):
+            buttons.append(button)
+        self.append(buttons)
+        link = Gtk.Box(spacing=6)
+        self.link_entry = Gtk.Entry(placeholder_text="https://...", hexpand=True)
+        self.link_entry.connect("activate", lambda *_a: self.on_open_link())
+        self.link_button = self._button("Open on the phone", self.on_open_link)
+        link.append(self.link_entry)
+        link.append(self.link_button)
+        self.append(link)
+        self.note = Gtk.Label(label="", xalign=0.0, wrap=True, selectable=True)
+        self.note.add_css_class("dim-label")
+        self.append(self.note)
+
+    @staticmethod
+    def _button(label: str, on_click) -> Gtk.Button:
+        button = Gtk.Button(label=label)
+        button.connect("clicked", lambda *_a: on_click())
+        return button
+
+    def say(self, text: str) -> None:
+        self.note.set_text(str(text))
+
+    def _do(self, busy: str, verb, *args) -> None:
+        self.say(busy)
+        common.in_thread(lambda: engine.do(verb, self.serial, *args),
+                         lambda r: self.say(f"Could not reach the phone: {r}"
+                                            if isinstance(r, Exception) else r),
+                         name="link-android-action")
+
+    def on_info(self) -> None:
+        self._do(f"Asking {self.name}...", engine.info)
+
+    def on_screenshot(self) -> None:
+        self._do("Taking a screenshot - keep the phone unlocked...", engine.screenshot)
+
+    def on_apps(self) -> None:
+        self._do("Listing the apps...", engine.apps)
+
+    def on_open_link(self) -> None:
+        url = self.link_entry.get_text().strip()
+        if not url:
+            self.say("Type a link first, starting http:// or https://.")
+            return
+        self._do(f"Opening {url} on the phone...", engine.open_url, url)
+
+    def send_file(self, path: str) -> None:
+        import os
+        self._do(f"Sending {os.path.basename(path)}...", engine.push, path)
+
+    def pick_file(self) -> None:
+        dialog = Gtk.FileDialog(title="Send to your phone", modal=True)
+        root = self.get_root()
+
+        def chosen(dlg, result) -> None:
+            try:
+                picked = dlg.open_finish(result)
+            except GLib.Error as exc:
+                if exc.code != Gtk.DialogError.DISMISSED:   # cancelled is silence
+                    self.say(f"The file dialog did not open: {exc.message}")
+                return
+            if picked is not None and picked.get_path():
+                self.send_file(picked.get_path())
+        dialog.open(root if isinstance(root, Gtk.Window) else None, None, chosen)
+
+
 def build(app) -> Gtk.Widget:
     """The phones adb can see for `app`, asked once at build time.
 
@@ -309,6 +402,8 @@ def build(app) -> Gtk.Widget:
     # answer - which is the defect `tests/test_surface_health_status.py` exists
     # for, and which this panel's own docstring about the sibling caught.
     page.status = recorder.status
+    #: serial -> PhoneActions, for each phone adb reports ready
+    page.actions = {}
 
     def gated(state: "State") -> Gtk.Widget:
         """An empty state, *with* the status row that matches its own word."""
@@ -375,6 +470,10 @@ def build(app) -> Gtk.Widget:
                             f"{len(devices)} answering over USB debugging"))
         for serial, state, model in devices:
             listing.append(_device_row(serial, state, model))
+            if state == "device":
+                actions = PhoneActions(serial, model)
+                page.actions[serial] = actions
+                listing.append(actions)
         deliver(listing, common.STATUS_OK, "Connected phones",
                 f"{len(devices)} answering")
 
