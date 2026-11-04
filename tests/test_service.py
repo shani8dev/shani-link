@@ -11,7 +11,7 @@ pytestmark = pytest.mark.skipif(not shutil.which("dbus-run-session") or not shut
 
 def on_bus(script, tmp_path):
     """Run `script` (sh) on a fresh session bus with the service started in it."""
-    env = dict(os.environ, XDG_CONFIG_HOME=str(tmp_path / "config"), XDG_RUNTIME_DIR=str(tmp_path / "run"),
+    env = dict(os.environ, XDG_CONFIG_HOME=str(tmp_path / "config"), XDG_RUNTIME_DIR=str(tmp_path / "run"), SHANI_LINK_NO_DEVICES="1",
                PYTHONPATH=ROOT)
     os.makedirs(env["XDG_RUNTIME_DIR"], mode=0o700)
     inner = textwrap.dedent(f"""
@@ -40,3 +40,11 @@ def test_errors_are_dbus_errors_not_crashes(tmp_path):
 def test_video_socket_is_private_and_served(tmp_path):
     out = on_bus('p=$(call VideoSocket | sed "s/(\\x27\\(.*\\)\\x27,)/\\1/"); stat -c "%a %F" "$p"\n', tmp_path)
     assert "600 socket" in out, out
+
+
+def test_switches_are_read_and_set_over_the_bus(tmp_path):
+    out = on_bus('''gdbus call --session -d dev.shani.Link -o /dev/shani/Link -m dev.shani.Link.SetSetting watch-weather-enabled true
+gdbus call --session -d dev.shani.Link -o /dev/shani/Link -m dev.shani.Link.Settings
+''', tmp_path)
+    assert '\\"watch-weather-enabled\\": true' in out or '"watch-weather-enabled": true' in out, out
+    assert (tmp_path / "config" / "shani-link" / "settings.json").exists()

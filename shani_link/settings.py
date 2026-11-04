@@ -23,8 +23,10 @@ KEYS = (
     "bluetooth-call-enabled", "bluetooth-gatt-enabled", "phone-control-enabled",
     "phone-remote-enabled", "phone-messages-read-enabled", "phone-messages-send-enabled",
     "watch-companion-enabled", "watch-nowplaying-enabled", "watch-weather-enabled",
-    "obex-receive-enabled", "landline-enabled",
+    "landline-enabled", "bluetooth-media-remote-enabled",
 )
+#: the one that was on unless turned off (music control from Bluetooth remotes)
+DEFAULT_ON = {"bluetooth-media-remote-enabled"}
 CHRONOA_SCHEMA = "org.shani.chronoa"
 
 
@@ -76,4 +78,4 @@ class Settings:
 
     def all(self) -> dict:
         with self._lock:
-            return {k: bool(self._data.get(k, False)) for k in KEYS}
+            return {k: bool(self._data.get(k, k in DEFAULT_ON)) for k in KEYS}

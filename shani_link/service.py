@@ -30,6 +30,20 @@ logger = logging.getLogger("shani-link")
 BUS_NAME = "dev.shani.Link"
 PATH = "/dev/shani/Link/Landline"
 IFACE = "dev.shani.Link.Landline"
+ROOT_PATH = "/dev/shani/Link"
+ROOT_IFACE = "dev.shani.Link"
+
+# the service's own object: its switches, and what the devices report (the
+# watch's voice button, a file arriving, ...) for whoever is listening
+ROOT_XML = f"""
+<node>
+  <interface name="{ROOT_IFACE}">
+    <method name="Settings"><arg type="s" direction="out"/></method>
+    <method name="SetSetting"><arg name="key" type="s"/><arg name="on" type="b"/></method>
+    <signal name="DeviceEvent"><arg name="source" type="s"/><arg name="kind" type="s"/><arg name="info_json" type="s"/></signal>
+  </interface>
+</node>
+"""
 
 XML = f"""
 <node>
@@ -108,13 +122,52 @@ class VideoFanout:
 
 class Service:
     def __init__(self, conn: Gio.DBusConnection):
+        from shani_link.settings import Settings
         self.conn = conn
+        self.settings = Settings()
+        root = Gio.DBusNodeInfo.new_for_xml(ROOT_XML)
+        conn.register_object(ROOT_PATH, root.interfaces[0], self._root_call, None, None)
         runtime = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
         self.video = VideoFanout(os.path.join(runtime, "shani-link", "video.sock"))
         landline.video_sink(self.video.frame)
         landline.listen(self._on_event)
         node = Gio.DBusNodeInfo.new_for_xml(XML)
         conn.register_object(PATH, node.interfaces[0], self._call, None, None)
+
+    def device_event(self, source: str, kind: str, **info) -> None:
+        GLib.idle_add(lambda: self.conn.emit_signal(None, ROOT_PATH, ROOT_IFACE, "DeviceEvent",
+                                                    GLib.Variant("(sss)", (source, kind, _json(info)))) and False)
+
+    def _root_call(self, _conn, _sender, _path, _iface, method, params, invocation) -> None:
+        if method == "Settings":
+            invocation.return_value(GLib.Variant("(s)", (_json(self.settings.all()),)))
+        elif method == "SetSetting":
+            key, on = params.unpack()
+            self.settings.set_bool(key, on)
+            invocation.return_value(None)
+        else:
+            invocation.return_dbus_error("dev.shani.Link.Error", f"no method {method}")
+
+    def start_devices(self) -> None:
+        """What runs with no window open: each one does nothing until its own
+        switch is on (settings.py), exactly as when it ran inside Chronoa."""
+        from shani_link.incoming_call import IncomingCallWatcher
+        from shani_link.obex_receive import ObexReceiver
+        from shani_link.watch_companion import WatchCompanion
+        from shani_link.ble_peripheral import RemoteService
+        from shani_link.map_notify import MessageWatcher
+        cfg = self.settings
+        self.devices = [IncomingCallWatcher(cfg), ObexReceiver(cfg),
+                        WatchCompanion(cfg, on_voice=lambda start: self.device_event("watch", "voice", start=start)),
+                        RemoteService(cfg), MessageWatcher(cfg)]
+        if cfg.get_bool("bluetooth-media-remote-enabled", True):
+            from shani_link.avrcp_target import AvrcpTarget
+            self.devices.append(AvrcpTarget())
+        for d in self.devices:
+            try:
+                d.start()
+            except Exception:  # noqa: BLE001 - one device that cannot start is not the service
+                logger.exception("could not start %s", type(d).__name__)
 
     # line events arrive on the engine's threads: the signal goes out on the main loop
     def _on_event(self, kind: str, **info) -> None:
@@ -204,6 +257,8 @@ def main() -> None:
     def acquired(conn, _name):
         holder["service"] = Service(conn)
         landline.start()          # nothing happens unless the line is set up and on
+        if not os.environ.get("SHANI_LINK_NO_DEVICES"):      # the tests' private bus has no BlueZ
+            holder["service"].start_devices()
         logger.info("on the session bus as %s", BUS_NAME)
 
     def lost(_conn, _name):
