@@ -11,11 +11,20 @@ niri with shani-shell, GNOME, Plasma - gets the same line.
 |---|---|---|
 | `/dev/shani/Link/Landline` | `dev.shani.Link.Landline` | The JioFiber landline through the router, like JioJoin: set up once with the texted code, then calls, keypad, mute, hold, swap, merge, history; `Event(kind, info_json)` for everything that happens on the line |
 
-Moving here from Shani Chronoa, in phases (the engines; Chronoa keeps its skills,
-which call this service): the phone link (the KDE Connect protocol, and
-GSConnect/KDE Connect when installed), the phone over plain Bluetooth (calls,
-texts, its screen), MoYoung watches, this computer's Bluetooth roles (a remote,
-AVRCP, battery), pairing and receiving files, and the Android companion app.
+Moving here from Shani Chronoa, in phases - the engines and their screens;
+Chronoa keeps thin skills that call this package:
+- the phone link (the KDE Connect protocol, and GSConnect/KDE Connect when installed)
+- the phone over plain Bluetooth: calls (PipeWire telephony), texts (MAP), its screen
+- MoYoung ("Da Fit") watches: health data, staying connected, the watch's buttons
+- this computer's Bluetooth roles: a remote (BLE), music control (AVRCP), battery
+- pairing, and receiving files (OBEX); Android over adb; this screen on the phone
+- FM radio (an RTL-SDR, demodulated here), NFC tags, infrared remotes
+- the Android companion app (android/)
+
+The parts that hold a connection open (the line, the phone link, the watch, the
+Bluetooth roles, receiving files) run in the service; the rest is a library
+(`shani_link`) the app, the shell and Chronoa's skills import. The app, Shani
+Link, has the pages: Phone, Watch, Devices, Radio, NFC and Remote.
 
 Video is a local socket, not D-Bus: `VideoSocket()` names it; each frame is a
 12-byte header (width, height, length; big-endian u32) and RGB24.
