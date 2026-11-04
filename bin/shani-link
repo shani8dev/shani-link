@@ -1,0 +1,6 @@
+#!/usr/bin/python3
+# shani-link: the computer's phone line, phone and watch, on the session bus (dev.shani.Link)
+import sys
+sys.path.insert(0, "/usr/lib/shani-link")
+from shani_link.service import main
+main()

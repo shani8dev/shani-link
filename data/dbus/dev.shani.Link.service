@@ -1,0 +1,4 @@
+[D-BUS Service]
+Name=dev.shani.Link
+Exec=/usr/bin/shani-link
+SystemdService=shani-link.service
