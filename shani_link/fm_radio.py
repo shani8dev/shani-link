@@ -43,11 +43,15 @@ Tuning a radio is radio control, so the whole skill is consent-gated behind
 from __future__ import annotations
 
 import array
+import atexit
 import math
 import os
 import shutil
 import struct
 import subprocess
+import tempfile
+import threading
+import time
 import wave
 from typing import Optional
 
@@ -71,7 +75,7 @@ BANDS = {
     "Japan FM": (76.0e6, 90.0e6, 200_000),
 }
 
-_ACTIONS = ("hardware", "bands", "scan", "tune", "decode")
+_ACTIONS = ("hardware", "bands", "scan", "tune", "stop", "volume", "decode")
 
 
 
@@ -625,6 +629,10 @@ def hardware() -> str:
         lines.append(f"rtl_fm is installed ({shutil.which('rtl_fm')})")
     else:
         lines.append(files.tool_missing("rtl_fm", "receive FM radio"))
+    if shutil.which("pw-play"):
+        lines.append(f"pw-play is installed ({shutil.which('pw-play')})")
+    else:
+        lines.append(files.tool_missing("pw-play", "play the radio through PipeWire"))
 
     # The Realtek vendor-name trap, handled: the WLAN chip is also Realtek, and
     # only the product string distinguishes the dongle from a Wi-Fi adapter.
@@ -764,6 +772,10 @@ def run(arguments: dict) -> str:
 
     if action == "scan":
         return _scan(arguments)
+    if action == "stop":
+        return stop()
+    if action == "volume":
+        return set_volume(arguments.get("volume"))
     return _tune(arguments)
 
 
@@ -794,20 +806,199 @@ def _frequency(arguments: dict) -> "tuple[Optional[float], str]":
     return hz, ""
 
 
+# --- listening live: rtl_fm piped into PipeWire ------------------------------
+#
+# `rtl_fm -M wbfm` does the whole broadcast receiver in the dongle's own tool
+# (wideband FM, de-emphasis, resampling) and writes raw signed 16-bit
+# little-endian mono at the rate `-r` asks for. `pw-play` reads exactly that
+# from stdin when told the same three things (`--raw --format s16 --rate
+# --channels 1`), so the two agree by construction: a rate that differs on
+# one side plays the station at the wrong pitch, which is why both argvs are
+# built from one constant. The two are child processes of whoever pressed
+# Tune, joined by a pipe this module owns; `stop()` ends both.
+
+#: The audio rate rtl_fm resamples to and pw-play is told to expect.
+PLAY_RATE = 48_000
+#: What the PipeWire stream is called (pavucontrol, the shell's mixer).
+STREAM_NAME = "FM radio"
+
+_PLAYING: dict = {}
+_PLAY_LOCK = threading.Lock()
+
+
+def live_command(frequency_hz: float, rate: int = PLAY_RATE) -> "list[str]":
+    """rtl_fm for live listening: wideband FM, raw s16le mono at `rate`, to stdout.
+
+    No `-g`: rtl_fm's gain is a number in dB and leaving it out is its
+    automatic gain (`-g auto` would read as 0 dB).
+    """
+    return ["rtl_fm", "-M", "wbfm", "-f", f"{frequency_hz:.0f}", "-r", str(int(rate)), "-"]
+
+
+def playback_command(volume: float = 1.0, rate: int = PLAY_RATE,
+                     title: str = STREAM_NAME) -> "list[str]":
+    """pw-play reading what `live_command` writes, from stdin."""
+    return ["pw-play", "--raw", "--format", "s16", "--rate", str(int(rate)),
+            "--channels", "1", "--media-role", "Music", "--volume", f"{volume:.2f}",
+            "-P", "{ media.name = \"%s\" node.description = \"%s\" }" % (title, title), "-"]
+
+
+def playing() -> "Optional[float]":
+    """The frequency (Hz) playing now, or None."""
+    with _PLAY_LOCK:
+        if _PLAYING and all(p.poll() is None for p in _PLAYING["procs"]):
+            return _PLAYING["frequency"]
+    return None
+
+
+def _end(procs: "list[subprocess.Popen]") -> None:
+    for proc in procs:
+        if proc.poll() is None:
+            try:
+                proc.terminate()
+            except OSError:
+                pass
+    for proc in procs:
+        try:
+            proc.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=3)
+
+
+def stop() -> str:
+    """Stop the radio: both children ended and reaped."""
+    with _PLAY_LOCK:
+        state = dict(_PLAYING)
+        _PLAYING.clear()
+    if not state:
+        return "The radio is not playing."
+    _end(state["procs"])
+    for handle in state.get("logs", ()):
+        handle.close()
+    return f"Stopped {state['frequency'] / 1e6:g} MHz."
+
+
+atexit.register(lambda: _PLAYING and stop())
+
+
+def _volume(raw) -> "tuple[Optional[float], str]":
+    """A volume as 0.0-1.0 from "50", "50%" or "0.5"."""
+    text = str(raw if raw is not None else "").strip().rstrip("%")
+    try:
+        value = float(text)
+    except ValueError:
+        return None, f"{raw!r} is not a volume; pass 0-100. Nothing was changed."
+    if value > 1.0:
+        value /= 100.0
+    if not 0.0 <= value <= 1.0:
+        return None, f"{raw!r} is outside 0-100. Nothing was changed."
+    return value, ""
+
+
+def _stream_node(pid: int) -> "Optional[int]":
+    """The PipeWire node id of the pw-play with process id `pid`."""
+    from shani_link import audio
+    for props in audio._graph_nodes():
+        if str(props.get("application.process.id", "")) == str(pid) and "object.id" in props:
+            try:
+                return int(props["object.id"])
+            except (TypeError, ValueError):
+                continue
+    return None
+
+
+def set_volume(raw) -> str:
+    """The radio's own stream volume in PipeWire (`wpctl set-volume <node>`),
+    which is what a mixer shows next to it - not the speakers' volume."""
+    value, why = _volume(raw)
+    if value is None:
+        return why
+    with _PLAY_LOCK:
+        state = dict(_PLAYING)
+    if not state:
+        return "The radio is not playing; tune a station first."
+    if not shutil.which("wpctl"):
+        return files.tool_missing("wpctl", "change the radio's volume")
+    node = None
+    for _ in range(10):              # the stream appears in the graph a moment after it starts
+        node = _stream_node(state["procs"][1].pid)
+        if node is not None:
+            break
+        time.sleep(0.2)
+    if node is None:
+        return ("The radio's stream is not in the PipeWire graph (pw-dump does not "
+                "list it), so its volume could not be set.")
+    from shani_link import audio
+    try:
+        proc = audio.run_wpctl("set-volume", str(node), f"{value:.2f}")
+    except (OSError, subprocess.SubprocessError) as exc:
+        return f"wpctl could not be run ({exc}). The volume is unchanged."
+    if proc.returncode != 0:
+        return f"wpctl refused: {(proc.stderr or proc.stdout).strip()}. The volume is unchanged."
+    with _PLAY_LOCK:
+        if _PLAYING.get("procs") is state["procs"]:
+            _PLAYING["volume"] = value
+    return f"Radio volume {round(value * 100)}%."
+
+
 def _tune(arguments: dict) -> str:
+    """Play `frequency` live: rtl_fm | pw-play, replacing whatever was playing."""
     frequency, why = _frequency(arguments)
     if frequency is None:
         return why
-    if not shutil.which("rtl_fm"):
-        return files.tool_missing("rtl_fm", "receive FM radio") + \
-            " A dongle is also needed; run action='hardware' to see what is attached."
-    seconds = arguments.get("seconds") or 10
+    for tool, purpose in (("rtl_fm", "receive FM radio"),
+                          ("pw-play", "play the radio through PipeWire")):
+        if not shutil.which(tool):
+            return files.tool_missing(tool, purpose) + " Nothing was tuned."
+    volume = 1.0
+    if arguments.get("volume") not in (None, ""):
+        volume, why = _volume(arguments.get("volume"))
+        if volume is None:
+            return why
+    elif _PLAYING:
+        volume = _PLAYING.get("volume", 1.0)
+    if _PLAYING:
+        stop()
+    title = f"{STREAM_NAME} {frequency / 1e6:g} MHz"
+    logs = [tempfile.TemporaryFile(), tempfile.TemporaryFile()]
     try:
-        argv = rtl_fm_command(frequency, seconds=int(seconds))
-    except (TypeError, ValueError) as exc:
-        return f"{exc}. Nothing was tuned."
-    return (f"Would tune {frequency / 1e6:g} MHz with:\n  {' '.join(argv)}\n"
-            "This machine has no RTL2832U, so the command is shown rather than run.")
+        radio = subprocess.Popen(live_command(frequency), stdout=subprocess.PIPE,
+                                 stdin=subprocess.DEVNULL, stderr=logs[0])
+    except OSError as exc:
+        for handle in logs:
+            handle.close()
+        return f"rtl_fm could not be started ({exc}). Nothing was tuned."
+    try:
+        player = subprocess.Popen(playback_command(volume, title=title), stdin=radio.stdout,
+                                  stdout=subprocess.DEVNULL, stderr=logs[1])
+    except OSError as exc:
+        _end([radio])
+        for handle in logs:
+            handle.close()
+        return f"pw-play could not be started ({exc}). Nothing was tuned."
+    radio.stdout.close()             # pw-play holds the read end; rtl_fm sees it go
+    procs = [radio, player]
+    # A missing or busy dongle ends rtl_fm at once ("usb_open error"); wait a
+    # moment so that is said, instead of a "Playing" that plays nothing.
+    deadline = time.monotonic() + 1.0
+    while time.monotonic() < deadline and all(p.poll() is None for p in procs):
+        time.sleep(0.05)
+    dead = [(name, p, log) for name, p, log in zip(("rtl_fm", "pw-play"), procs, logs)
+            if p.poll() is not None]
+    if dead:
+        _end(procs)
+        name, _p, log = dead[0]
+        log.seek(0)
+        said = log.read().decode("utf-8", "replace").strip().splitlines()
+        for handle in logs:
+            handle.close()
+        return (f"{name} stopped at once" + (f": {said[-1]}" if said else "")
+                + ". Nothing is playing; check the radio stick is plugged in and "
+                "not used by another program.")
+    with _PLAY_LOCK:
+        _PLAYING.update(procs=procs, logs=logs, frequency=frequency, volume=volume)
+    return f"Playing {frequency / 1e6:g} MHz at {round(volume * 100)}% volume. Press Stop to end it."
 
 
 def _scan(arguments: dict) -> str:

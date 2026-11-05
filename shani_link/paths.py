@@ -16,6 +16,7 @@ _PACKAGES = {
     "nfc-list": "libnfc", "nfc-scan-device": "libnfc", "nfc-mfultralight": "libnfc",
     "nfc-emulate-forum-tag4": "libnfc", "adb": "android-tools", "scrcpy": "scrcpy",
     "bluetoothctl": "bluez-utils", "busctl": "systemd", "wpctl": "wireplumber", "pw-cat": "pipewire",
+    "pw-play": "pipewire", "irsend": "lirc",
     "ffmpeg": "ffmpeg", "gatttool": "bluez-deprecated-tools",
 }
 
