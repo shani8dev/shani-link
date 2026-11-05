@@ -48,10 +48,12 @@ BOOK_SECONDS = 3600
 
 def caller_label(props: dict, book: "list[tuple[str, tuple[str, ...]]]") -> "tuple[str, str]":
     """(title, body) for the notification: the contact's name when known, else the number."""
-    from shani_link import phone as ph
+    from shani_link import contacts
     number = str(props.get("LineIdentification") or props.get("IncomingLine") or "").strip()
     named = str(props.get("Name") or "").strip()
-    name = ph.name_for(number, book) if number and book else ""
+    # the one lookup every screen uses: your own contacts, then the phone's
+    # (`book` when this watcher has pulled it, else the Phone page's cache)
+    name = contacts.name_for(number, book or None) if number else ""
     who = name or named or number or "Unknown caller"
     detail = number if (name or named) and number else ""
     waiting = str(props.get("State") or "") == "waiting"
@@ -59,7 +61,16 @@ def caller_label(props: dict, book: "list[tuple[str, tuple[str, ...]]]") -> "tup
 
 
 class IncomingCallWatcher:
-    """Start with `start()`, stop with `stop()`; everything else is internal."""
+    """Start with `start()`, stop with `stop()`; everything else is internal.
+
+    The card itself (post, act on a button, close when the call ends) is shared
+    with the modem's watcher (`mm_voice.ModemWatcher`), which overrides only
+    where the calls come from (`_subscribe`) and how they are answered (`act`).
+    """
+
+    #: the switch that lets this card ring, and its value before anyone sets it
+    call_key = CALL_KEY
+    call_key_default = False
 
     def __init__(self, config: Any, bus_factory: Optional[Callable[[], Any]] = None):
         self.config = config
@@ -71,6 +82,8 @@ class IncomingCallWatcher:
         self.shown: "dict[str, int]" = {}     # call path -> notification id
         self._book: "list[tuple[str, tuple[str, ...]]]" = []
         self._book_at = 0.0
+        #: calls seen on the phone, for the call history: path -> what we know
+        self._track: "dict[str, dict]" = {}
 
     # --- life cycle ------------------------------------------------------------
 
@@ -104,11 +117,7 @@ class IncomingCallWatcher:
                              | Gio.DBusConnectionFlags.MESSAGE_BUS_CONNECTION, None, None))
             sub = self._bus.signal_subscribe
             flags = Gio.DBusSignalFlags.NONE
-            self._subs = [
-                sub(None, "org.ofono.VoiceCallManager", "CallAdded", None, None, flags, self._on_added),
-                sub(None, "org.ofono.VoiceCallManager", "CallRemoved", None, None, flags, self._on_removed),
-                sub(None, "org.freedesktop.DBus.Properties", "PropertiesChanged", None, CALL_IFACE,
-                    flags, self._on_changed),
+            self._subs = self._subscribe(self._bus, flags) + [
                 sub(NOTIFY_BUS, NOTIFY_BUS, "ActionInvoked", NOTIFY_PATH, None, flags, self._on_action),
                 sub(NOTIFY_BUS, NOTIFY_BUS, "NotificationClosed", NOTIFY_PATH, None, flags,
                     self._on_closed),
@@ -125,15 +134,29 @@ class IncomingCallWatcher:
         finally:
             for s in self._subs:
                 self._bus.signal_unsubscribe(s)
+            self._unsubscribe()
             for nid in list(self.shown.values()):
                 self._close(nid)
             ctx.pop_thread_default()
 
+    def _subscribe(self, bus, flags) -> list:
+        """Where the calls come from: PipeWire's telephony, on the session bus."""
+        sub = bus.signal_subscribe
+        return [
+            sub(None, "org.ofono.VoiceCallManager", "CallAdded", None, None, flags, self._on_added),
+            sub(None, "org.ofono.VoiceCallManager", "CallRemoved", None, None, flags, self._on_removed),
+            sub(None, "org.freedesktop.DBus.Properties", "PropertiesChanged", None, CALL_IFACE,
+                flags, self._on_changed),
+        ]
+
+    def _unsubscribe(self) -> None:
+        """Anything `_subscribe` held beyond the subscriptions it returned."""
+
     # --- what the phone says ---------------------------------------------------
 
-    def _allowed(self, key: str) -> bool:
+    def _allowed(self, key: str, default: bool = False) -> bool:
         try:
-            return bool(self.config.get_bool(key, False))
+            return bool(self.config.get_bool(key, default))
         except Exception:  # noqa: BLE001 - fails closed
             return False
 
@@ -141,25 +164,52 @@ class IncomingCallWatcher:
         if not str(path).startswith(TELEPHONY_ROOT):
             return
         call, props = params.unpack()
-        self.ringing(str(call), dict(props))
+        props = dict(props)
+        self._seen(str(call), props)
+        self.ringing(str(call), props)
 
     def _on_changed(self, _conn, _sender, path, _iface, _signal, params) -> None:
         if not str(path).startswith(TELEPHONY_ROOT):
             return
         _iface_name, changed, _gone = params.unpack()
         state = str(dict(changed).get("State") or "")
+        if state == "active" and str(path) in self._track and self._track[str(path)]["answered"] is None:
+            self._track[str(path)]["answered"] = time.monotonic()
         if state and state not in RINGING:
             self.ended(str(path))       # answered (here or on the phone) or hung up
 
     def _on_removed(self, _conn, _sender, path, _iface, _signal, params) -> None:
         if str(path).startswith(TELEPHONY_ROOT):
-            self.ended(str(params.unpack()[0]))
+            call = str(params.unpack()[0])
+            self.ended(call)
+            self._log(call)
+
+    def _seen(self, call: str, props: dict) -> None:
+        """Remember a call on the phone, to log it in the call history when it goes."""
+        state = str(props.get("State") or "")
+        number = str(props.get("LineIdentification") or props.get("IncomingLine") or "").strip()
+        self._track[call] = {"number": number, "direction": "in" if state in RINGING else "out",
+                             "answered": time.monotonic() if state == "active" else None}
+
+    def _log(self, call: str) -> None:
+        """The phone's call into the shared call history (with the call switch on:
+        with it off this computer is not taking the phone's calls at all)."""
+        seen = self._track.pop(call, None)
+        if seen is None or not self._allowed(CALL_KEY):
+            return
+        try:
+            from shani_link import calls_log, contacts
+            seconds = int(time.monotonic() - seen["answered"]) if seen["answered"] else 0
+            calls_log.add("phone", seen["number"], seen["direction"], seen["answered"] is not None,
+                          seconds, name=contacts.name_for(seen["number"], self._book or None))
+        except Exception:  # noqa: BLE001 - the history is a convenience, the call is not
+            logger.info("incoming call: not logged", exc_info=True)
 
     def ringing(self, call: str, props: dict) -> None:
         if str(props.get("State") or "") not in RINGING or call in self.shown:
             return
-        if not self._allowed(CALL_KEY):
-            logger.info("incoming call not shown: '%s' is off", CALL_KEY)
+        if not self._allowed(self.call_key, self.call_key_default):
+            logger.info("incoming call not shown: '%s' is off", self.call_key)
             return
         # Only the cached book: pulling contacts over Bluetooth takes ~20 s, and a
         # call notification that late is no notification. A stale book is
@@ -249,7 +299,7 @@ class IncomingCallWatcher:
 
     def act(self, call: str, action: str) -> None:
         """Answer or decline `call` on the phone - the notification's two buttons."""
-        if not self._allowed(CALL_KEY):
+        if not self._allowed(self.call_key, self.call_key_default):
             return
         method = "Answer" if action == "answer" else "Hangup"
         try:

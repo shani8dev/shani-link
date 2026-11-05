@@ -163,3 +163,49 @@ def test_the_caller_is_named_from_the_contacts():
     title, body = ic.caller_label({"State": "incoming", "LineIdentification": "09800000001"},
                                   [("Asha Rao", ("+91 98000 00001",))])
     assert title == "Incoming call: Asha Rao" and body == "09800000001"
+
+
+def _wait(cond, seconds=5.0):
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline and not cond():
+        GLib.MainContext.default().iteration(False)
+        time.sleep(0.02)
+    return cond()
+
+
+def test_a_call_the_phone_rang_and_nobody_answered_is_a_missed_call_in_the_history(phone_and_watcher):
+    from shani_link import calls_log
+    phone, _watcher = phone_and_watcher
+    calls_log.clear()
+    phone.ring("+919800000009")
+    assert phone.wait_for("Notify")
+    phone.emit(GATEWAY, "org.ofono.VoiceCallManager", "CallRemoved", GLib.Variant("(o)", (CALL,)))
+    assert _wait(lambda: calls_log.rows()), "the phone's call never reached the history"
+    row = calls_log.rows()[0]
+    assert (row["line"], row["number"], row["direction"], row["missed"]) == \
+        ("phone", "+919800000009", "in", True)
+
+
+def test_an_answered_phone_call_is_logged_with_its_length(phone_and_watcher):
+    from shani_link import calls_log
+    phone, _watcher = phone_and_watcher
+    calls_log.clear()
+    phone.ring()
+    assert phone.wait_for("Notify")
+    phone.emit(CALL, "org.freedesktop.DBus.Properties", "PropertiesChanged", GLib.Variant(
+        "(sa{sv}as)", (ic.CALL_IFACE, {"State": GLib.Variant("s", "active")}, [])))
+    assert phone.wait_for("CloseNotification")
+    phone.emit(GATEWAY, "org.ofono.VoiceCallManager", "CallRemoved", GLib.Variant("(o)", (CALL,)))
+    assert _wait(lambda: calls_log.rows())
+    assert calls_log.rows()[0]["missed"] is False
+
+
+def test_your_own_contact_names_the_caller_before_the_phones(tmp_path, monkeypatch):
+    from shani_link import contacts
+    contacts.book().save(contacts.Contact(full_name="Mine", phones=[("cell", "+919800000001")]))
+    try:
+        title, _body = ic.caller_label({"State": "incoming", "LineIdentification": "09800000001"},
+                                       [("Asha Rao", ("+91 98000 00001",))])
+        assert title == "Incoming call: Mine"
+    finally:
+        contacts.book().delete([c.uid for c in contacts.book().all()])

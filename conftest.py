@@ -12,3 +12,8 @@ sys.path.insert(0, os.path.dirname(__file__))
 # the landline's files would otherwise read (and carry over) their real line
 import tempfile
 os.environ["XDG_CONFIG_HOME"] = tempfile.mkdtemp(prefix="shani-link-test-config-")
+# nor their data or cache: the call history, the address book and the phone's
+# cached contacts live there, and a test that logs a call must never log it in
+# somebody's real history
+os.environ["XDG_DATA_HOME"] = tempfile.mkdtemp(prefix="shani-link-test-data-")
+os.environ["XDG_CACHE_HOME"] = tempfile.mkdtemp(prefix="shani-link-test-cache-")

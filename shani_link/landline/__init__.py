@@ -308,23 +308,24 @@ def _need():
     return current
 
 
-# --- call history (placed / received / missed), kept locally ------------------------------
+# --- call history (placed / received / missed): the one list every line shares ----------
+# The landline used to keep its own landline-calls.json; its rows now go into
+# `shani_link.calls_log` with the phone's and the modem's, and that file's old
+# rows are carried over the first time the shared list is read.
 
 HISTORY_MAX = 100
 
 
-def _history_file():
-    import os
-    base = os.environ.get("XDG_DATA_HOME") or str(pathlib.Path.home() / ".local" / "share")
-    return provision.migrated(pathlib.Path(base) / "shani-link" / "landline-calls.json")
-
-
 def history() -> "list[dict]":
-    """Recent landline calls, newest first: {number, name, kind, when, seconds}."""
-    try:
-        return json.loads(_history_file().read_text())
-    except (OSError, ValueError):
-        return []
+    """Recent landline calls, newest first: {number, name, kind, when, seconds}
+    (kind: placed, received or missed) - the shape this has always returned."""
+    from shani_link import calls_log
+    out = []
+    for r in calls_log.rows(HISTORY_MAX, line="landline"):
+        kind = "missed" if r.get("missed") else ("received" if r.get("direction") == "in" else "placed")
+        out.append({"number": r.get("number", ""), "name": r.get("name", ""), "kind": kind,
+                    "when": r.get("when", 0), "seconds": r.get("seconds", 0)})
+    return out
 
 
 def _log_history(kind: str, info: dict) -> None:
@@ -337,20 +338,22 @@ def _log_history(kind: str, info: dict) -> None:
     elif kind == "answered":
         _STATE["answered"] = True
     elif kind == "ended":
-        import time
+        from shani_link import calls_log
         direction = _STATE.pop("dir", "placed")
         answered = _STATE.pop("answered", False)
-        row = {"number": info.get("number", ""), "name": info.get("name", ""),
-               "kind": direction if answered or direction == "placed" else "missed",
-               "when": int(time.time()), "seconds": int(info.get("seconds", 0))}
-        try:
-            rows = history()
-            rows.insert(0, row)
-            path = _history_file()
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(json.dumps(rows[:HISTORY_MAX]))
-        except OSError:
-            logger.debug("could not log the landline call", exc_info=True)
+        number = info.get("number", "")
+        calls_log.add("landline", number, "in" if direction == "received" else "out",
+                      answered or direction == "placed", int(info.get("seconds", 0) or 0),
+                      name=info.get("name", "") or _name_for(number))
+
+
+def _name_for(number: str) -> str:
+    """The caller's name from the address book (yours, then the phone's)."""
+    try:
+        from shani_link import contacts
+        return contacts.name_for(number)
+    except Exception:  # noqa: BLE001 - a number with no name still rings
+        return ""
 
 
 # --- contacts cache, so a name can be dialled (headless skill included) --------------------
@@ -381,6 +384,13 @@ def resolve_name(name: str) -> str:
     want = "".join(name.lower().split())
     if not want:
         return ""
+    try:                      # your own address book first: the names you saved win
+        from shani_link import contacts
+        for c in contacts.book().all():
+            if c.numbers() and "".join(c.display_name().lower().split()) == want:
+                return c.numbers()[0]
+    except Exception:  # noqa: BLE001
+        pass
     best = ""
     for entry in history_contacts():
         cname, numbers = entry[0], entry[1]
@@ -411,7 +421,8 @@ def _event(kind: str, **info) -> None:
         except Exception:  # noqa: BLE001
             logger.debug("landline listener failed", exc_info=True)
     if kind == "incoming":
-        _notify(info.get("name") or info.get("number") or "Unknown caller", info.get("number", ""))
+        _notify(_name_for(info.get("number", "")) or info.get("name") or info.get("number")
+                or "Unknown caller", info.get("number", ""))
     elif kind in ("answered", "ended"):
         _close_note()
 
