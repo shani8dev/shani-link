@@ -64,6 +64,20 @@ def _in_thread(work: Callable[[], Any], done: Callable[[Any], None]) -> None:
     threading.Thread(target=run, daemon=True).start()
 
 
+def _is_iphone(dev: Any, which: Any) -> bool:
+    """Is the connected phone an iPhone - by its name, or (over Bluetooth) by
+    BlueZ's Apple vendor id (`apple.is_apple`)?"""
+    from shani_link import apple
+    if dev is None:
+        return False
+    if apple.is_apple(getattr(dev, "name", "")):
+        return True
+    if str(which) == "bluetooth":
+        from shani_link import phone_bluez
+        return apple.is_apple(modalias=phone_bluez.modalias(str(dev.id)))
+    return False
+
+
 def _tether_target(dev: Any, which: Any) -> "Optional[tuple[str, str]]":
     """(Bluetooth address, name) of the phone whose internet this computer can
     use, or None. A phone reached over Bluetooth is its own address; one reached
@@ -370,6 +384,7 @@ stackswitcher button {
             dev = next((d for d in phones if d.reachable), phones[0] if phones else None)
             battery = ph.battery(dev) if dev is not None and dev.reachable else None
             which = ph.backend()
+            iphone = _is_iphone(dev, which)
             target = _tether_target(dev, which)
             internet = None
             if target is not None:
@@ -378,9 +393,10 @@ stackswitcher button {
                     internet = tether.state(*target) if tether.available() else None
                 except tether.TetherError:
                     internet = None
-            return dev, battery, which, (target, internet)
+            return dev, battery, which, (target, internet), iphone
 
         def done(result):
+            self._iphone = False
             if isinstance(result, ph.PhoneUnavailable):
                 # no phone app and nothing paired over Bluetooth: no phone yet
                 self.device = None
@@ -392,8 +408,9 @@ stackswitcher button {
                 self.set_status(common.STATUS_ATTENTION, "Could not reach your phone", str(result))
                 self._phone_changed()
                 return
-            dev, battery, which, (target, internet) = result
+            dev, battery, which, (target, internet), iphone = result
             self.device = dev
+            self._iphone = bool(iphone)
             self._phone_bluetooth = str(which) == "bluetooth"
             if dev is None:
                 self._no_phone()
@@ -408,11 +425,15 @@ stackswitcher button {
                 self.set_status(common.STATUS_ATTENTION, f"{dev.name} is not connected",
                                 "Turn on Bluetooth on the phone and keep it near this computer, "
                                 "then press Reload.")
+            if self._iphone:
+                self.status_box.append(self._iphone_row(dev))
             if internet is not None:
                 self.status_box.append(self._internet_row(target, internet))
             self._phone_changed()
-            self.load_contacts()
             self.load_history()
+            if self._iphone:
+                return              # no calls, texts or contacts through an iPhone; saved ones stay
+            self.load_contacts()
             self.load_conversations()
         _in_thread(work, done)
 
@@ -468,17 +489,47 @@ stackswitcher button {
     def _phone_up(self) -> bool:
         return self.device is not None and bool(getattr(self.device, "reachable", False))
 
+    def _phone_line(self) -> bool:
+        """A connected phone that calls and texts can go through: not an iPhone."""
+        return self._phone_up() and not getattr(self, "_iphone", False)
+
+    def _iphone_row(self, dev: Any) -> Gtk.Widget:
+        """What works with this iPhone, said once - with no button, since its
+        calls and texts cannot go through Linux (`shani_link.apple`)."""
+        from shani_link import apple
+        holder = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE, margin_top=6)
+        holder.add_css_class("boxed-list")
+        row = Adw.ActionRow(title=GLib.markup_escape_text(apple.HEADLINE),
+                            subtitle=GLib.markup_escape_text(apple.summary()))
+        row.add_prefix(Gtk.Image(icon_name="dialog-information-symbolic"))
+        holder.append(row)
+        self.iphone_row = row
+        return holder
+
     def _phone_changed(self) -> None:
         """Show what needs a phone only when there is one: the call bar, the
         audio switch, the Messages, Music and Files tabs' controls."""
         up = self._phone_up()
-        for name in ("messages", "music", "files"):
+        iphone = up and getattr(self, "_iphone", False)
+        # An iPhone plays its music here (Bluetooth audio); its texts and
+        # Bluetooth file sending cannot work, so those tabs say so instead.
+        for name, works in (("messages", up and not iphone), ("music", up), ("files", up and not iphone)):
             body, missing = getattr(self, f"_{name}_body", None), getattr(self, f"_{name}_missing", None)
             if body is not None and missing is not None:
-                body.set_visible(up)
+                body.set_visible(works)
                 missing.set_visible(not up)
+            apple_note = getattr(self, f"_{name}_iphone", None)
+            if apple_note is not None:
+                apple_note.set_visible(iphone)
         self._refresh_lines()
         self._refresh_incall()
+
+    def _iphone_note(self, title: str) -> Gtk.Widget:
+        """A tab's "not with an iPhone", with what works instead and no button."""
+        from shani_link import apple
+        note = common.empty_state("phone-symbolic", title, apple.summary(), inline=True)
+        note.set_visible(False)
+        return note
 
     def _needs_phone(self, title: str, why: str) -> Gtk.Widget:
         """A tab's "connect your phone first", with the button that does it."""
@@ -504,7 +555,7 @@ stackswitcher button {
         bar = getattr(self, "incall_bar", None)
         if bar is None:
             return
-        phone = self._phone_up()
+        phone = self._phone_line()
         bar.set_visible(phone or self._call_in_progress())
         route = getattr(self, "route_box", None)
         if route is not None:
@@ -1031,6 +1082,10 @@ stackswitcher button {
     def _line_chosen(self) -> None:
         calls_view.set_default_line(self.selected_line())
 
+    NO_LINE_HINT = "To make a call, connect your phone or set up your landline above."
+    IPHONE_HINT = ("Calls through an iPhone aren't possible on Linux - set up your landline "
+                   "above to call from here.")
+
     def _refresh_lines(self) -> None:
         """Which lines this computer has, asked once when the dial pad is built
         (and on Reload): the landline set up, a phone, a voice modem."""
@@ -1043,15 +1098,17 @@ stackswitcher button {
             if isinstance(result, Exception):
                 return
             self._has_modem = bool(result.get("modem"))
-            lines = [k for k, on in (("landline", result.get("landline")), ("phone", self._phone_up()),
+            lines = [k for k, on in (("landline", result.get("landline")), ("phone", self._phone_line()),
                                      ("modem", self._has_modem)) if on]
             self.lines = lines
             if getattr(self, "line_row", None) is not None:
                 self.line_row.set_visible(len(lines) > 1)
-            hint = "To make a call, connect your phone or set up your landline above."
-            if not lines and not self.call_note.get_text():
+            hint = (self.IPHONE_HINT if getattr(self, "_iphone", False) and self._phone_up()
+                    else self.NO_LINE_HINT)
+            hints = (hint, self.NO_LINE_HINT, self.IPHONE_HINT)
+            if not lines and (not self.call_note.get_text() or self.call_note.get_text() in hints):
                 self.call_note.set_text(hint)
-            elif lines and self.call_note.get_text() == hint:
+            elif lines and self.call_note.get_text() in hints:
                 self.call_note.set_text("")
             self.line_choice.set_tooltip_text(
                 "Automatic: the landline when it is connected, else your phone"
@@ -1153,6 +1210,10 @@ stackswitcher button {
         if self.device is None:
             self.call_note.set_text("No phone is connected. Connect your phone, or set up "
                                     "your landline, to make calls.")
+            return
+        if getattr(self, "_iphone", False):
+            from shani_link import apple
+            self.call_note.set_text("Not called: " + apple.NOT_POSSIBLE)
             return
         self.call_note.set_text(f"Calling {number}...")
         dev = self.device
@@ -1497,6 +1558,8 @@ stackswitcher button {
             "Texts need your phone", "Connect your phone to read your texts and send new ones here.")
         self._messages_missing.set_visible(False)
         outer.append(self._messages_missing)
+        self._messages_iphone = self._iphone_note("Texts through an iPhone aren't possible on Linux")
+        outer.append(self._messages_iphone)
         box = common.page_body(10)
         self._messages_body = box
         outer.append(box)
@@ -1648,6 +1711,10 @@ stackswitcher button {
         if self.device is None:
             self.send_note.set_text("No phone is connected.")
             return
+        if getattr(self, "_iphone", False):
+            from shani_link import apple
+            self.send_note.set_text("Not sent: " + apple.NOT_POSSIBLE)
+            return
         self.send_note.set_text("Sending...")
         dev = self.device
 
@@ -1735,6 +1802,8 @@ stackswitcher button {
             "Sending files needs your phone", "Connect your phone to send it photos and files.")
         self._files_missing.set_visible(False)
         box.append(self._files_missing)
+        self._files_iphone = self._iphone_note("An iPhone's files are in Files, over a USB cable")
+        box.append(self._files_iphone)
         self._files_body = common.page_body(6)
         send = _button("Send a file to the phone...", self.pick_file, suggested=True)
         send.set_halign(Gtk.Align.CENTER)

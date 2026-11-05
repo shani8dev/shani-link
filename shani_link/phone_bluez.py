@@ -100,6 +100,14 @@ def phones() -> "list[tuple[str, str, bool]]":
     return out
 
 
+def modalias(address: str) -> str:
+    """BlueZ's `Modalias` for a paired device ("bluetooth:v004Cp..."), or ""."""
+    if not shutil.which("bluetoothctl") or not bluez_running():
+        return ""
+    m = re.search(r"^\s*Modalias:\s*(\S+)", _run(["bluetoothctl", "info", address]).stdout or "", re.M)
+    return m.group(1) if m else ""
+
+
 def ensure_music_bridge() -> bool:
     """Start bluez's own `mpris-proxy` user unit, which shows a phone's player
     (AVRCP) as an MPRIS player that `media_control` already drives.
