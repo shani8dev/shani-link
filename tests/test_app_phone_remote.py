@@ -30,6 +30,10 @@ class Switches:
     def get_bool(self, key, default=False):
         return self.on if key == "phone-remote-enabled" else default
 
+    def set_bool(self, key, on):
+        assert key == "phone-remote-enabled"
+        self.on = on
+
 
 class App:
     def __init__(self, on=True):
@@ -47,13 +51,16 @@ def _tab(on=True):
     return panel, tab
 
 
-def test_with_the_switch_off_the_keys_are_hidden_and_background_is_named():
+def test_with_the_switch_off_the_keys_are_hidden_and_turn_on_is_right_here():
+    """Turning it on is one click on this tab - not a trip to another page to
+    find a switch by name."""
     panel, tab = _tab(on=False)
     assert not panel.remote_keys.get_visible() and panel.remote_off.get_visible()
-    assert any("Phone as a remote" in t and "Background" in t for t in texts(panel.remote_off))
-    open_background = next(b for b in _buttons(panel.remote_off) if b.get_label() == "Open Background")
-    open_background.emit("clicked")
-    assert panel.app.shown == ["background"]
+    turn_on = next(b for b in _buttons(panel.remote_off) if b.get_label() == "Turn on")
+    turn_on.emit("clicked")
+    assert panel.app.switches.on is True and panel.app.shown == []
+    assert panel.remote_keys.get_visible() and not panel.remote_off.get_visible()
+    assert "Chronoa Remote" in panel.remote_note.get_text(), "the pairing name is said once it is on"
 
 
 def test_turning_the_switch_on_shows_the_keys_when_the_tab_is_shown_again():

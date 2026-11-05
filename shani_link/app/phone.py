@@ -44,9 +44,8 @@ logger = logging.getLogger(__name__)
 
 TITLE = "Phone"
 ICON = "call-start-symbolic"
-SUBTITLE = ("Calls on your landline and your phone, its messages, contacts, "
-            "music and files - through the phone link, or plain Bluetooth "
-            "when there is none. Your watch is on the Watch page.")
+SUBTITLE = ("Calls, texts and contacts on this computer - through your phone, "
+            "your landline, or this computer's own mobile modem.")
 #: Reading the phone takes seconds; build this page when it is opened, not at start.
 PREBUILD = False
 
@@ -292,7 +291,8 @@ stackswitcher button {
         self.status_box = common.page_body(0)
         body.append(self.status_box)
         self._install_panel_css()
-        self.set_status(common.STATUS_UNKNOWN, "Looking for your phone...")
+        self.status_recorder.set(common.STATUS_UNKNOWN)
+        self.status_box.append(common.loading("Looking for your phone..."))
 
         stack = Gtk.Stack(transition_type=Gtk.StackTransitionType.CROSSFADE, vexpand=True)
         self.stack = stack
@@ -330,6 +330,26 @@ stackswitcher button {
         _clear(self.status_box)
         self.status_box.append(self.status_recorder.row(status, summary, detail))
 
+    #: What the Phone page says when there is no phone yet - kindly, with one
+    #: way forward. (It used to be a red "Needs attention" naming GSConnect and
+    #: KDE Connect, which is this computer's business, not the person's.)
+    NO_PHONE = "No phone connected yet"
+    NO_PHONE_WHY = "Connect your phone to call, text and play its music from this computer."
+
+    def _no_phone(self) -> None:
+        """The friendly card: no phone yet, and the one button that fixes it."""
+        _clear(self.status_box)
+        self.status_recorder.set(common.STATUS_OFF)
+        holder = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE)
+        holder.add_css_class("boxed-list")
+        card = Adw.ActionRow(title=self.NO_PHONE, subtitle=self.NO_PHONE_WHY)
+        card.add_prefix(Gtk.Image(icon_name="phone-symbolic", pixel_size=32))
+        button = common.connect_button(self.app, "", "Connect your phone")
+        button.set_valign(Gtk.Align.CENTER)
+        card.add_suffix(button)
+        holder.append(card)
+        self.status_box.append(holder)
+
     def find_phone(self) -> None:
         def work():
             phones = [d for d in ph.devices() if d.paired]
@@ -338,27 +358,86 @@ stackswitcher button {
             return dev, battery, ph.backend()
 
         def done(result):
+            if isinstance(result, ph.PhoneUnavailable):
+                # no phone app and nothing paired over Bluetooth: no phone yet
+                self.device = None
+                self._no_phone()
+                self._phone_changed()
+                return
             if isinstance(result, Exception):
-                self.set_status(common.STATUS_ATTENTION, "No phone", str(result))
+                self.device = None
+                self.set_status(common.STATUS_ATTENTION, "Could not reach your phone", str(result))
+                self._phone_changed()
                 return
             dev, battery, which = result
             self.device = dev
+            self._phone_bluetooth = str(which) == "bluetooth"
             if dev is None:
-                self.set_status(common.STATUS_ATTENTION, "No phone is paired",
-                                "Pair it over Bluetooth for calls and texts")
-                self.status_box.append(common.connect_button(
-                    self.app, "bluetooth", "Pair a phone"))
+                self._no_phone()
+                self._phone_changed()
                 return
-            how = {"bluetooth": "Bluetooth", "gsconnect": "GSConnect",
-                   "kdeconnect": "KDE Connect"}.get(str(which), str(which))
-            self.set_status(
-                common.STATUS_OK if dev.reachable else common.STATUS_ATTENTION,
-                f"{dev.name} - {'connected' if dev.reachable else 'not connected'}",
-                f"through {how}" + (f", battery {battery[0]}%" if battery else ""))
+            how = {"bluetooth": "over Bluetooth", "gsconnect": "through GSConnect",
+                   "kdeconnect": "through KDE Connect"}.get(str(which), "")
+            if dev.reachable:
+                self.set_status(common.STATUS_OK, f"{dev.name} is connected",
+                                " ".join(x for x in (how, f"· battery {battery[0]}%" if battery else "") if x))
+            else:
+                self.set_status(common.STATUS_ATTENTION, f"{dev.name} is not connected",
+                                "Turn on Bluetooth on the phone and keep it near this computer, "
+                                "then press Reload.")
+            self._phone_changed()
             self.load_contacts()
             self.load_history()
             self.load_conversations()
         _in_thread(work, done)
+
+    def _phone_up(self) -> bool:
+        return self.device is not None and bool(getattr(self.device, "reachable", False))
+
+    def _phone_changed(self) -> None:
+        """Show what needs a phone only when there is one: the call bar, the
+        audio switch, the Messages, Music and Files tabs' controls."""
+        up = self._phone_up()
+        for name in ("messages", "music", "files"):
+            body, missing = getattr(self, f"_{name}_body", None), getattr(self, f"_{name}_missing", None)
+            if body is not None and missing is not None:
+                body.set_visible(up)
+                missing.set_visible(not up)
+        self._refresh_lines()
+        self._refresh_incall()
+
+    def _needs_phone(self, title: str, why: str) -> Gtk.Widget:
+        """A tab's "connect your phone first", with the button that does it."""
+        return common.empty_state("phone-symbolic", title, why, inline=True,
+                                  child=common.connect_button(getattr(self, "app", None), "",
+                                                              "Connect your phone"))
+
+    def _call_in_progress(self) -> bool:
+        if getattr(self, "_modem_call", "") or getattr(self, "_phone_call", False):
+            return True
+        try:
+            from shani_link.app import line as landline
+            return bool(landline.calls()) or bool(landline.in_call())
+        except Exception:  # noqa: BLE001 - no landline is no landline call
+            return False
+
+    def _refresh_incall(self) -> None:
+        """The call bar is there while a call is, or while a phone line is
+        connected (its calls are answered and ended from here) - never as two
+        big buttons on a computer that cannot make a call at all. The audio
+        switch (this computer or the phone) only means anything for a phone
+        connected over Bluetooth."""
+        bar = getattr(self, "incall_bar", None)
+        if bar is None:
+            return
+        phone = self._phone_up()
+        bar.set_visible(phone or self._call_in_progress())
+        route = getattr(self, "route_box", None)
+        if route is not None:
+            route.set_visible(phone and getattr(self, "_phone_bluetooth", False))
+        note = getattr(self, "devices_note", None)
+        if note is not None:
+            note.set_visible(bar.get_visible() and bool(note.get_text()))
 
     # --- calls ---------------------------------------------------------------
 
@@ -445,6 +524,9 @@ stackswitcher button {
         incall = Gtk.Box(spacing=12, halign=Gtk.Align.CENTER)
         incall.add_css_class("card")
         incall.add_css_class("dialer-incall")
+        # Hidden until there is a call, or a phone line to answer one on.
+        incall.set_visible(False)
+        self.incall_bar = incall
         # Who the call is with, and on which line: the first thing anyone looks for.
         self.incall_who = _label("", wrap=False)
         self.incall_who.add_css_class("heading")
@@ -468,6 +550,8 @@ stackswitcher button {
         toggles.append(self.on_pc)
         toggles.append(self.on_phone)
         route.append(toggles)
+        route.set_visible(False)
+        self.route_box = route
         incall.append(route)
         # Mute, and the running call timer beside it.
         self.mute_button = Gtk.ToggleButton(icon_name="microphone-sensitivity-muted-symbolic",
@@ -568,6 +652,9 @@ stackswitcher button {
         self.line_choice.connect("notify::selected", lambda *_: self._line_chosen())
         self.line_choice.set_tooltip_text("Automatic: the landline when it is connected, else your phone")
         line_row.append(self.line_choice)
+        # Only when there is a choice to make: two lines or more.
+        line_row.set_visible(False)
+        self.line_row = line_row
         box.append(line_row)
         self._refresh_lines()
 
@@ -591,6 +678,8 @@ stackswitcher button {
         box.append(self._call_note_row)
         self.devices_note = _label("", dim=True)
         self.devices_note.add_css_class("caption")
+        self.devices_note.set_xalign(0.5)
+        self.devices_note.set_visible(False)
         box.append(self.devices_note)
         self.show_route()
         self.calls_history = calls_view.History(self)
@@ -758,6 +847,7 @@ stackswitcher button {
             self._hide_video()
         if kind in ("answered", "ended"):
             self._refresh_call_controls()
+        self._refresh_incall()
         if kind in ("registered", "unregistered") and hasattr(self, "_landline_status"):
             self._refresh_landline()
         if kind == "ended" and hasattr(self, "history"):
@@ -879,6 +969,16 @@ stackswitcher button {
             if isinstance(result, Exception):
                 return
             self._has_modem = bool(result.get("modem"))
+            lines = [k for k, on in (("landline", result.get("landline")), ("phone", self._phone_up()),
+                                     ("modem", self._has_modem)) if on]
+            self.lines = lines
+            if getattr(self, "line_row", None) is not None:
+                self.line_row.set_visible(len(lines) > 1)
+            hint = "To make a call, connect your phone or set up your landline above."
+            if not lines and not self.call_note.get_text():
+                self.call_note.set_text(hint)
+            elif lines and self.call_note.get_text() == hint:
+                self.call_note.set_text("")
             self.line_choice.set_tooltip_text(
                 "Automatic: the landline when it is connected, else your phone"
                 + ("; this computer's mobile modem is there too" if self._has_modem else ""))
@@ -977,7 +1077,8 @@ stackswitcher button {
                 self.call_note.set_text(f"Not called: {exc}")
             return
         if self.device is None:
-            self.call_note.set_text("No phone is connected.")
+            self.call_note.set_text("No phone is connected. Connect your phone, or set up "
+                                    "your landline, to make calls.")
             return
         self.call_note.set_text(f"Calling {number}...")
         dev = self.device
@@ -986,6 +1087,8 @@ stackswitcher button {
             if isinstance(result, Exception):
                 self.call_note.set_text(f"Not called: {result}")
             elif ph.places_calls():
+                self._phone_call = True
+                self._refresh_incall()
                 self.call_note.set_text(f"Calling {number} through {dev.name}. Hang up here or on the phone.")
             else:
                 self.call_note.set_text(f"Opened the dialer on {dev.name} with {number} - press call there.")
@@ -1001,6 +1104,7 @@ stackswitcher button {
                 self.call_note.set_text(f"Not called: {result}")
                 return
             self._modem_call = result
+            self._refresh_incall()
             self.incall_who.set_text(f"{self.name_for(number) or number} · Mobile")
             self.incall_who.set_visible(True)
             self.call_note.set_text(f"Calling {number} on the mobile modem. Hang up here when you are done.")
@@ -1029,6 +1133,7 @@ stackswitcher button {
             self._start_call_timer()
         elif state == "terminated":
             self._modem_call = ""
+            self._refresh_incall()
             self._stop_call_timer()
             self.incall_who.set_visible(False)
             self.call_note.set_text("Mobile call ended.")
@@ -1079,14 +1184,15 @@ stackswitcher button {
 
         def done(result):
             if isinstance(result, Exception):
-                self.devices_note.set_text(f"Call audio route unknown: {result}")
+                self.devices_note.set_text("")
                 return
             where, (speaker, mic) = result
             self._routing = True
             (self.on_pc if where == "pc" else self.on_phone).set_active(True)
             self._routing = False
-            self.devices_note.set_text(f"On this PC a call uses the speaker '{speaker}' and the "
-                                       f"microphone '{mic}' (the system defaults; change them in Sound settings).")
+            known = [n for n in (speaker, mic) if n and n != "unknown"]
+            self.devices_note.set_text(f"Calls here use {' and '.join(known)}." if known else "")
+            self._refresh_incall()
         _in_thread(work, done)
 
     def route(self, where: str) -> None:
@@ -1157,6 +1263,9 @@ stackswitcher button {
                 self.call_note.set_text(str(exc))
             return
         self.call_note.set_text("...")
+        if action == "hangup":
+            self._phone_call = False
+            self._refresh_incall()
         _in_thread(lambda: _call_tool({"action": action}),
                    lambda r: self.call_note.set_text(str(r)))
 
@@ -1309,18 +1418,33 @@ stackswitcher button {
     # --- messages -------------------------------------------------------------
 
     def messages_tab(self) -> Gtk.Widget:
+        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        self._messages_missing = self._needs_phone(
+            "Texts need your phone", "Connect your phone to read your texts and send new ones here.")
+        self._messages_missing.set_visible(False)
+        outer.append(self._messages_missing)
         box = common.page_body(10)
+        self._messages_body = box
+        outer.append(box)
         self.threads = common.page_body(0)
         box.append(self.threads)
         self.thread_title = _label("")
+        self.thread_title.add_css_class("heading")
         box.append(self.thread_title)
-        self.thread_view = common.page_body(4)
+        self.thread_view = common.page_body(6)
         box.append(self.thread_view)
         compose = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-        self.to = Gtk.Entry(placeholder_text="To (number)", width_chars=14)
+        # Who to: picked from your contacts (or a conversation above); typing a
+        # number is the other way, never the only one.
+        to = Gtk.Box(spacing=0)
+        to.add_css_class("linked")
+        self.to = Gtk.Entry(placeholder_text="To", width_chars=14)
+        self.to_picker = self._contact_picker(self._picked_recipient)
+        to.append(self.to)
+        to.append(self.to_picker)
         self.text = Gtk.Entry(hexpand=True, placeholder_text="Message")
         self.text.connect("activate", lambda _e: self.send())
-        compose.append(self.to)
+        compose.append(to)
         compose.append(self.text)
         compose.append(_button("Send", self.send, suggested=True))
         box.append(compose)
@@ -1328,7 +1452,64 @@ stackswitcher button {
         self._send_note_row, self._send_note_btn = self._note_row()
         self._send_note_row.append(self.send_note)
         box.append(self._send_note_row)
-        return box
+        return outer
+
+    def _picked_recipient(self, name: str, number: str) -> None:
+        self.to.set_text(number)
+        self.thread_title.set_text(f"To {name}")
+        self.text.grab_focus()
+
+    def recipients(self, query: str = "") -> "list[tuple[str, str]]":
+        """(name, number) for everyone with a number: your contacts, then the
+        phone's - the choices the To field offers."""
+        out: "list[tuple[str, str]]" = []
+        seen = set()
+        try:
+            people = ct.search(query, 0, phone_book=self.book or None)
+        except Exception:  # noqa: BLE001 - an unreadable book offers nobody
+            people = []
+        for c in people:
+            for number in c.numbers():
+                key = ct.digits(number)
+                if key and key not in seen:
+                    seen.add(key)
+                    out.append((c.display_name(), number))
+        return out
+
+    def _contact_picker(self, on_pick: Callable[[str, str], None]) -> Gtk.MenuButton:
+        """A button with your contacts in it: one click puts a number in."""
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        search = Gtk.SearchEntry(placeholder_text="Search contacts")
+        listing = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE)
+        listing.add_css_class("boxed-list")
+        scroller = Gtk.ScrolledWindow(child=listing, min_content_height=240, min_content_width=280,
+                                      hscrollbar_policy=Gtk.PolicyType.NEVER)
+        box.append(search)
+        box.append(scroller)
+        popover = Gtk.Popover(child=box)
+        button = Gtk.MenuButton(icon_name="contact-new-symbolic", popover=popover,
+                                tooltip_text="Choose a contact")
+        button.update_property([Gtk.AccessibleProperty.LABEL], ["Choose a contact"])
+
+        def fill(*_a) -> None:
+            _clear(listing)
+            found = self.recipients(search.get_text())
+            for name, number in found[:200]:
+                row = common.row(name, number, activatable=True)
+
+                def chosen(_r, name=name, number=number) -> None:
+                    popover.popdown()
+                    on_pick(name, number)
+                row.connect("activated", chosen)
+                row.recipient = (name, number)
+                listing.append(row)
+            if not found:
+                listing.append(common.row("No contacts with a number yet"))
+        search.connect("search-changed", fill)
+        popover.connect("show", fill)
+        button.fill = fill
+        button.listing = listing
+        return button
 
     def load_conversations(self) -> None:
         self.notice(self.threads, "Reading messages...")
@@ -1343,9 +1524,14 @@ stackswitcher button {
             for m in result[:40]:
                 who = ", ".join(self.name_for(a) or a for a in m.addresses) or "(unknown)"
                 preview = _preview(m.body)
-                lb.append(_item(who, f"{_when(m.date)}{'' if m.read else ' - unread'}: {preview}",
-                                _button("Open", lambda m=m, who=who: self.open_thread(m, who))))
-            self.threads.append(lb if result else _label("No messages.", dim=True))
+                row = _item(who, f"{_when(m.date)}{'' if m.read else ' · unread'} · {preview}",
+                            Gtk.Image(icon_name="go-next-symbolic"))
+                if isinstance(row, Adw.ActionRow):
+                    row.set_activatable(True)
+                    row.connect("activated", lambda _r, m=m, who=who: self.open_thread(m, who))
+                row.open_thread = lambda m=m, who=who: self.open_thread(m, who)
+                lb.append(row)
+            self.threads.append(lb if result else _label("No texts yet.", dim=True))
         _in_thread(lambda: ph.conversations(dev), done)
 
     def open_thread(self, latest, who: str) -> None:
@@ -1360,15 +1546,30 @@ stackswitcher button {
                 return
             _clear(self.thread_view)
             for m in result:
-                lab = _label(f"{'Them' if m.incoming else 'You'} ({_when(m.date)}): {m.body or '(no text)'}")
-                lab.set_halign(Gtk.Align.START if m.incoming else Gtk.Align.END)
-                self.thread_view.append(lab)
+                # a bubble: theirs on the left, yours on the right, the time under it
+                bubble = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2,
+                                 halign=Gtk.Align.START if m.incoming else Gtk.Align.END)
+                bubble.add_css_class("card")
+                text = _label(m.body or "(no text)")
+                for side in ("top", "start", "end"):
+                    getattr(text, f"set_margin_{side}")(8)
+                text.set_xalign(0)
+                stamp = _label(_when(m.date), dim=True, wrap=False)
+                stamp.add_css_class("caption")
+                stamp.set_xalign(0)
+                stamp.set_margin_start(8)
+                stamp.set_margin_bottom(6)
+                stamp.set_margin_end(8)
+                bubble.append(text)
+                bubble.append(stamp)
+                bubble.message = m
+                self.thread_view.append(bubble)
         _in_thread(lambda: ph.thread_messages(dev, latest.thread, 20), done)
 
     def send(self) -> None:
         number, text = self.to.get_text().strip(), self.text.get_text().strip()
         if not number or not text:
-            self.send_note.set_text("Type a number and a message.")
+            self.send_note.set_text("Choose who to send it to, and write a message.")
             return
         if self.device is None:
             self.send_note.set_text("No phone is connected.")
@@ -1419,8 +1620,16 @@ stackswitcher button {
     # --- music ------------------------------------------------------------------
 
     def music_tab(self) -> Gtk.Widget:
+        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        self._music_missing = self._needs_phone(
+            "Music needs your phone", "Connect your phone to control the music playing on it.")
+        self._music_missing.set_visible(False)
+        outer.append(self._music_missing)
         box = common.page_body(10)
-        self.now = _label("Press Refresh to see what is playing.", dim=True)
+        self._music_body = box
+        outer.append(box)
+        self.now = _label("What is playing on your phone shows here.", dim=True)
+        self.now.set_xalign(0.5)
         box.append(self.now)
         row = Gtk.Box(spacing=6, halign=Gtk.Align.CENTER)
         for label, icon, action in (("Previous", "media-skip-backward-symbolic", "previous"),
@@ -1429,9 +1638,9 @@ stackswitcher button {
                                     ("Refresh", "view-refresh-symbolic", "status")):
             row.append(_button(label, lambda a=action: self.music(a), icon=icon))
         box.append(row)
-        box.append(_label("Phone music appears through bluez's mpris-proxy, which must be "
-                          "running (systemctl --user start mpris-proxy).", dim=True))
-        return box
+        # what is playing, read when the tab is opened with a phone there
+        box.connect("map", lambda *_a: self._phone_up() and self.music("status"))
+        return outer
 
     def music(self, action: str) -> None:
         def work():
@@ -1444,15 +1653,34 @@ stackswitcher button {
 
     # --- files ------------------------------------------------------------------
 
+    RECEIVE_SWITCH = "phone-control-enabled"
+
     def files_tab(self) -> Gtk.Widget:
         box = common.page_body(10)
-        box.append(_button("Send a file to the phone...", self.pick_file, suggested=True))
+        self._files_missing = self._needs_phone(
+            "Sending files needs your phone", "Connect your phone to send it photos and files.")
+        self._files_missing.set_visible(False)
+        box.append(self._files_missing)
+        self._files_body = common.page_body(6)
+        send = _button("Send a file to the phone...", self.pick_file, suggested=True)
+        send.set_halign(Gtk.Align.CENTER)
+        send.add_css_class("pill")
+        self._files_body.append(send)
         self.file_note = _label("The phone asks you to accept each file.", dim=True)
-        box.append(self.file_note)
-        box.append(_label("Files from the phone: share them to this computer over Bluetooth "
-                          "(Share > Bluetooth on the phone). Shani Link asks before saving each one, "
-                          "into your Downloads folder, while \"Receive files over Bluetooth\" "
-                          "is on (Background).", dim=True))
+        self.file_note.set_xalign(0.5)
+        self._files_body.append(self.file_note)
+        box.append(self._files_body)
+        # From the phone: one switch, here where it is wanted (also on Background).
+        receive = common.switch_row(
+            "Receive files from your phone",
+            "On the phone, share a file with Bluetooth and pick this computer. "
+            "You are asked before each one is saved to Downloads.",
+            self._switch_on(self.RECEIVE_SWITCH),
+            lambda on: self._set_switch(self.RECEIVE_SWITCH, on))
+        self.receive_row = receive
+        holder = common.group()
+        holder.add(receive) if hasattr(holder, "add") else holder.append(receive)
+        box.append(holder)
         # **What actually arrived.** The sentence above has been here since the
         # receiver landed, and it was the whole of it: a person who shared
         # something to this computer had no way to see what had been saved or
@@ -1547,9 +1775,11 @@ stackswitcher button {
                    ("Volume down", "audio-volume-low-symbolic", "volume_down"),
                    ("Volume up", "audio-volume-high-symbolic", "volume_up"))
     REMOTE_SWITCH = "phone-remote-enabled"
-    REMOTE_OFF = ("Turn on \u201cPhone as a remote\u201d on the Background page, then pair "
-                  "\u201cChronoa Remote\u201d from the phone's Bluetooth settings, to press "
-                  "its camera shutter and media keys from here.")
+    REMOTE_OFF = ("Use this computer as a remote for your phone: take a photo, "
+                  "skip a song or change the volume from here.")
+    REMOTE_PAIR = ("On your phone, open Bluetooth settings and pair with "
+                   "\u201cChronoa Remote\u201d once. In the phone's camera app, "
+                   "Take a photo presses the shutter.")
 
     def remote_tab(self) -> Gtk.Widget:
         """The phone's keys, pressed from here - only while its switch is on.
@@ -1560,7 +1790,11 @@ stackswitcher button {
         box = common.page_body(10)
         self.remote_off = common.page_body(8)
         self.remote_off.append(_label(self.REMOTE_OFF, dim=True))
-        self.remote_off.append(_button("Open Background", self._open_background))
+        turn_on = _button("Turn on", lambda: self._set_switch(self.REMOTE_SWITCH, True) or self.refresh_remote(),
+                          suggested=True)
+        turn_on.set_halign(Gtk.Align.START)
+        self.remote_turn_on = turn_on
+        self.remote_off.append(turn_on)
         box.append(self.remote_off)
         self.remote_keys = common.page_body(10)
         grid = Gtk.FlowBox(selection_mode=Gtk.SelectionMode.NONE, max_children_per_line=3,
@@ -1573,23 +1807,36 @@ stackswitcher button {
             self.remote_buttons[key] = button
             grid.append(button)
         self.remote_keys.append(grid)
-        self.remote_note = _label("In the phone's camera app, Take a photo presses the shutter.", dim=True)
+        self.remote_note = _label(self.REMOTE_PAIR, dim=True)
         self.remote_keys.append(self.remote_note)
         box.append(self.remote_keys)
         box.connect("map", lambda *_a: self.refresh_remote())
         self.refresh_remote()
         return box
 
-    def _remote_on(self) -> bool:
-        switches = getattr(self.app, "switches", None)
+    def _switches(self):
+        switches = getattr(getattr(self, "app", None), "switches", None)
+        if switches is None:
+            from shani_link import settings
+            switches = settings.Settings()
+        return switches
+
+    def _switch_on(self, key: str) -> bool:
         try:
-            if switches is None:
-                from shani_link import settings
-                switches = settings.Settings()
-            return bool(switches.get_bool(self.REMOTE_SWITCH, False))
+            return bool(self._switches().get_bool(key, False))
         except Exception:  # noqa: BLE001 - unreadable is off
-            logger.debug("could not read %s", self.REMOTE_SWITCH, exc_info=True)
+            logger.debug("could not read %s", key, exc_info=True)
             return False
+
+    def _set_switch(self, key: str, on: bool) -> None:
+        """A Background switch, set from the tab that needs it (the same switch)."""
+        try:
+            self._switches().set_bool(key, bool(on))
+        except Exception as exc:  # noqa: BLE001 - said, not raised
+            self.toast(f"Could not change it: {exc}")
+
+    def _remote_on(self) -> bool:
+        return self._switch_on(self.REMOTE_SWITCH)
 
     def refresh_remote(self) -> None:
         on = self._remote_on()
