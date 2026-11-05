@@ -42,8 +42,9 @@ useless:
 moved past.** It is Ubuntu with no pacman, no `/dev/lirc*`, no `/sys/class/rc`,
 no IR transmitter or receiver, and not one of the binaries above. So the codec,
 the device probe's honest refusal and the gating are all verified here; the
-`send` and `receive` paths are written against the tools' documented contracts
-and marked unverified in the module that runs them. A skill that claimed
+`send` paths (`irsend SEND_ONCE` for lircd's remotes, `ir-ctl --send` for a raw
+code, both only once a /dev/lirc* node reports LIRC_CAN_SEND) run against fake
+tools in tests/test_ir_send.py, which pin the argv, not a lit LED. A skill that claimed
 otherwise would be claiming to have sent infrared it never sent.
 
 Blasting infrared is a *write* to the physical world: it turns things on and off
@@ -55,10 +56,13 @@ by default.
 from __future__ import annotations
 
 
+import fcntl
 import os
 import shutil
+import struct
 import subprocess
-from typing import Optional
+import tempfile
+from typing import Dict, List, Optional, Tuple
 
 
 from shani_link import paths as files
@@ -509,11 +513,54 @@ def device_report() -> "tuple[list[str], str]":
                 "(shani-peripherals).")
 
 
-def transmitter() -> "tuple[Optional[str], str]":
-    """(device to write to, why not)."""
+#: `LIRC_GET_FEATURES`, `_IOR('i', 0x00000000, __u32)` in <linux/lirc.h>: what
+#: a /dev/lirc* node can do, as a bit mask.
+LIRC_GET_FEATURES = 0x80046900
+#: `LIRC_CAN_SEND_MASK`: any of the send modes (raw, pulse, mode2, lirccode).
+#: A receiver-only node (most USB receivers, every laptop's CIR) has none.
+LIRC_CAN_SEND_MASK = 0x0000003F
+
+
+def features(device: str) -> "tuple[Optional[int], str]":
+    """(the LIRC_GET_FEATURES mask of `device`, why it could not be read)."""
+    try:
+        fd = os.open(device, os.O_RDONLY | os.O_NONBLOCK)
+    except OSError as exc:
+        return None, f"{device} could not be opened ({exc.strerror or exc})"
+    try:
+        raw = fcntl.ioctl(fd, LIRC_GET_FEATURES, b"\0" * 4)
+        return struct.unpack("I", raw)[0], ""
+    except OSError as exc:
+        return None, f"{device} did not say what it can do ({exc.strerror or exc})"
+    finally:
+        os.close(fd)
+
+
+def transmitters() -> "tuple[list[str], str]":
+    """(the /dev/lirc* nodes that can send, why there are none)."""
     devices = lirc_devices()
     if not devices:
-        return None, device_report()[1]
+        return [], device_report()[1] or "no /dev/lirc* node is on this machine"
+    found, whys = [], []
+    for device in devices:
+        mask, why = features(device)
+        if mask is None:
+            whys.append(why)
+        elif mask & LIRC_CAN_SEND_MASK:
+            found.append(device)
+        else:
+            whys.append(f"{device} can only receive")
+    if found:
+        return found, ""
+    return [], ("no infrared transmitter: " + "; ".join(whys) + ". Sending needs an IR "
+                "blaster (a USB transceiver, or a board's IR LED with its driver loaded).")
+
+
+def transmitter() -> "tuple[Optional[str], str]":
+    """(device ir-ctl writes to, why not)."""
+    devices, why = transmitters()
+    if not devices:
+        return None, why
     if not shutil.which("ir-ctl"):
         return None, files.tool_missing("ir-ctl", "send infrared from this computer")
     if not os.access(devices[0], os.W_OK):
@@ -522,6 +569,100 @@ def transmitter() -> "tuple[Optional[str], str]":
                       "group lirc; joining that group, or a udev rule, is what makes "
                       "them writable")
     return devices[0], ""
+
+
+# --- lircd's remotes: irsend --------------------------------------------------
+#
+# lircd (lirc, on every ShaniOS image) loads remote definitions from
+# /etc/lirc/lircd.conf.d and sends through its own driver. `irsend LIST "" ""`
+# names the remotes it loaded and `irsend LIST <remote> ""` their buttons, one
+# "<code> <name>" per line; lirc 0.9 printed both on stderr behind "irsend: ",
+# 0.10 on stdout, so both streams are read and the prefix dropped.
+
+
+def _irsend(*args: str) -> "tuple[Optional[list[str]], str]":
+    """(irsend's lines, why it failed)."""
+    if not shutil.which("irsend"):
+        return None, files.tool_missing("irsend", "send infrared through lircd")
+    try:
+        proc = _run_tool(["irsend", *args])
+    except subprocess.TimeoutExpired:
+        return None, "lircd did not answer irsend in time"
+    except (OSError, subprocess.SubprocessError) as exc:
+        return None, f"irsend could not be run ({exc})"
+    lines = []
+    for line in (proc.stdout + "\n" + proc.stderr).splitlines():
+        line = line.strip()
+        if line.startswith("irsend:"):
+            line = line[len("irsend:"):].strip()
+        if line:
+            lines.append(line)
+    if proc.returncode != 0:
+        said = "; ".join(lines) or f"exit status {proc.returncode}"
+        if "connect" in said.lower() or "socket" in said.lower():
+            return None, (f"lircd is not running ({said}). Start it with "
+                          "`systemctl enable --now lircd`, with a remote's .lircd.conf "
+                          "in /etc/lirc/lircd.conf.d")
+        return None, f"irsend refused: {said}"
+    return lines, ""
+
+
+def remotes() -> "tuple[list[str], str]":
+    """(the remotes lircd knows, why there are none)."""
+    lines, why = _irsend("LIST", "", "")
+    if lines is None:
+        return [], why
+    names = [ln.split()[0] for ln in lines if ln.split()]
+    if not names:
+        return [], ("lircd knows no remotes: put a remote's .lircd.conf in "
+                    "/etc/lirc/lircd.conf.d (`irdb-get` finds one) and restart lircd")
+    return names, ""
+
+
+def keys(remote: str) -> "tuple[list[str], str]":
+    """(the buttons of `remote` as lircd names them, why there are none)."""
+    known, why = remotes()
+    if remote not in known:
+        return [], why or f"lircd does not know a remote called {remote!r}"
+    lines, why = _irsend("LIST", remote, "")
+    if lines is None:
+        return [], why
+    names = [ln.split()[-1] for ln in lines if ln.split()]
+    return (names, "") if names else ([], f"lircd lists no buttons for {remote}")
+
+
+def send_key(remote: str, key: str) -> str:
+    """Press `key` of `remote` once (`irsend SEND_ONCE`). Only a remote and a
+    button lircd itself listed are sent: nothing typed reaches irsend."""
+    devices, why = transmitters()
+    if not devices:
+        return f"Nothing was sent: {why}"
+    remote, key = str(remote or "").strip(), str(key or "").strip()
+    if not remote or not key:
+        return "Pick a remote and a button. Nothing was sent."
+    names, why = keys(remote)
+    if not names:
+        return f"Nothing was sent: {why}"
+    if key not in names:
+        return f"{remote} has no button called {key!r}. Nothing was sent."
+    lines, why = _irsend("SEND_ONCE", remote, key)
+    if lines is None:
+        return f"Nothing was sent: {why}"
+    return f"Sent {key} of {remote}."
+
+
+def send_abilities() -> "Dict[str, str]":
+    """Why each send route cannot be used ("" when it can): "send" is lircd's
+    remotes through irsend, "send-code" a raw code through ir-ctl."""
+    devices, why = transmitters()
+    if not devices:
+        return {"send": why, "send-code": why}
+    out = {}
+    names, why_remotes = remotes()
+    out["send"] = "" if names else why_remotes
+    _device, why_raw = transmitter()
+    out["send-code"] = why_raw
+    return out
 
 
 # --- the commands -----------------------------------------------------------
@@ -534,7 +675,7 @@ def _run_tool(argv: list, timeout: int = _TIMEOUT) -> "subprocess.CompletedProce
 
 
 
-_ACTIONS = ("devices", "encode", "decode", "send", "receive")
+_ACTIONS = ("devices", "encode", "decode", "send", "remotes", "keys", "send-key", "receive")
 
 
 def _as_int(value, field: str) -> "tuple[Optional[int], str]":
@@ -624,6 +765,15 @@ def _run(arguments: dict) -> str:
                     "exactly as ir-ctl prints them. Nothing was decoded.")
         return _decode_timings(text)
 
+    if action == "remotes":
+        names, why = remotes()
+        return "\n".join(names) if names else why
+    if action == "keys":
+        names, why = keys(str(arguments.get("remote") or "").strip())
+        return "\n".join(names) if names else why
+    if action == "send-key":
+        return send_key(arguments.get("remote", ""), arguments.get("key", ""))
+
     if action == "send":
         # The device and the tool are checked **before** the code is built, so a
         # machine with nothing to send through reports that rather than a
@@ -653,18 +803,21 @@ def _run(arguments: dict) -> str:
         except ValueError as exc:
             return f"The code could not be built: {exc} Nothing was sent."
         body = to_irctl_file(timings, carrier)
-        try:
-            with open("/dev/null", "w", encoding="utf-8") as handle:
-                handle.write(body)
-        except OSError:
-            pass
-        # This is the invocation the module would make. It is written against
-        # ir-ctl's documented contract and **not verified on any machine here**,
-        # because there is no IR device and no ir-ctl to verify it with.
-        report = (f"Ready to send through {device}: {' '.join(f'{k} {v}' for k, v in timings)}\n\n"
-                  f"The command is `ir-ctl -d {device} --send=<file>` where <file> holds:\n\n"
-                  + body)
-        return report
+        with tempfile.NamedTemporaryFile("w", prefix="ir-", suffix=".txt",
+                                         encoding="utf-8") as handle:
+            handle.write(body)
+            handle.flush()
+            try:
+                proc = _run_tool(["ir-ctl", "-d", device, f"--send={handle.name}"])
+            except subprocess.TimeoutExpired:
+                return f"ir-ctl did not finish sending through {device}. It may not have been sent."
+            except (OSError, subprocess.SubprocessError) as exc:
+                return f"ir-ctl could not be run ({exc}). Nothing was sent."
+        if proc.returncode != 0:
+            return (f"ir-ctl could not send through {device}: "
+                    f"{(proc.stderr or proc.stdout).strip()} Nothing was sent.")
+        return (f"Sent a {protocol.upper()} code (address {address}, button {command}) "
+                f"through {device}.")
 
     # receive
     if not lirc_devices():
