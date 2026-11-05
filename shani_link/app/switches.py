@@ -53,6 +53,10 @@ LABELS = {
     "landline-enabled": (
         "JioFiber landline",
         "Your landline rings and dials on this computer"),
+    "modem-call-enabled": (
+        "Calls on this computer's mobile modem",
+        "Ring here when the SIM in this computer's own modem gets a call (only "
+        "computers with a mobile modem that can make calls)"),
     "bluetooth-media-remote-enabled": (
         "Media keys from Bluetooth",
         "Headphones' and car kits' play/pause and skip buttons control music here"),

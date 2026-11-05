@@ -8,6 +8,12 @@ what happens on it ("incoming", "ringing", "answered", "ended", "registered",
 dialer, Chronoa's skill and Phone page, a GNOME or Plasma panel - talks to the
 line here, so it rings with every window closed and has one owner.
 
+Two more objects serve the rest of the desktop (the shell's dialer and call
+card, Chronoa's skills): /dev/shani/Link/Contacts (dev.shani.Link.Contacts:
+search the address book, name a number) and /dev/shani/Link/Calls
+(dev.shani.Link.Calls: the lines, the shared call history, dial / answer /
+hang up on any line). JSON strings carry the records, as `Calls` already did.
+
 Video goes over a local socket instead of D-Bus (frames are big and many):
 `VideoSocket()` names it; each frame is a 12-byte header (width, height,
 length, big-endian u32) and that many bytes of RGB24.
@@ -78,6 +84,37 @@ XML = f"""
 """
 
 
+CONTACTS_PATH = "/dev/shani/Link/Contacts"
+CONTACTS_IFACE = "dev.shani.Link.Contacts"
+CALLS_PATH = "/dev/shani/Link/Calls"
+CALLS_IFACE = "dev.shani.Link.Calls"
+
+CONTACTS_XML = f"""
+<node>
+  <interface name="{CONTACTS_IFACE}">
+    <method name="Search"><arg name="query" type="s"/><arg name="limit" type="i"/><arg type="s" direction="out"/></method>
+    <method name="Lookup"><arg name="number" type="s"/><arg type="s" direction="out"/></method>
+  </interface>
+</node>
+"""
+
+CALLS_XML = f"""
+<node>
+  <interface name="{CALLS_IFACE}">
+    <method name="Lines"><arg type="s" direction="out"/></method>
+    <method name="Dial"><arg name="line" type="s"/><arg name="number" type="s"/><arg type="s" direction="out"/></method>
+    <method name="Answer"><arg name="line" type="s"/><arg type="b" direction="out"/></method>
+    <method name="Hangup"><arg name="line" type="s"/><arg type="b" direction="out"/></method>
+    <method name="SendDtmf"><arg name="line" type="s"/><arg name="digit" type="s"/><arg type="b" direction="out"/></method>
+    <method name="RecentCalls"><arg name="limit" type="i"/><arg type="s" direction="out"/></method>
+    <method name="DeleteCall"><arg name="id" type="s"/><arg type="b" direction="out"/></method>
+    <method name="ClearCalls"/>
+    <signal name="CallLogged"><arg name="row_json" type="s"/></signal>
+  </interface>
+</node>
+"""
+
+
 def _json(value) -> str:
     return json.dumps(value, default=str)
 
@@ -142,6 +179,71 @@ class Service:
         landline.listen(self._on_event)
         node = Gio.DBusNodeInfo.new_for_xml(XML)
         conn.register_object(PATH, node.interfaces[0], self._call, None, None)
+        for xml, path, handler in ((CONTACTS_XML, CONTACTS_PATH, self._contacts_call),
+                                   (CALLS_XML, CALLS_PATH, self._calls_call)):
+            conn.register_object(path, Gio.DBusNodeInfo.new_for_xml(xml).interfaces[0],
+                                 handler, None, None)
+        # Every logged call goes out as CallLogged, so an open history refreshes;
+        # a missed one also gets its notification. Rows are logged on the lines'
+        # own threads: both hand over to the main loop.
+        from shani_link import calls_log
+        from shani_link.missed_call import MissedCallNotifier
+        self.missed = MissedCallNotifier(conn)
+        calls_log.on_logged(lambda row: GLib.idle_add(self._emit_logged, row))
+        calls_log.on_missed(lambda row: GLib.idle_add(lambda: (self.missed.post(row), False)[1]))
+
+    def _emit_logged(self, row: dict) -> bool:
+        self.conn.emit_signal(None, CALLS_PATH, CALLS_IFACE, "CallLogged",
+                              GLib.Variant("(s)", (_json(row),)))
+        return False
+
+    def _answer(self, invocation, fn) -> None:
+        try:
+            out = fn()
+        except Exception as exc:  # noqa: BLE001 - every failure is the caller's answer
+            invocation.return_dbus_error("dev.shani.Link.Error", str(exc))
+            return
+        invocation.return_value(out)
+
+    def _contacts_call(self, _conn, _sender, _path, _iface, method, params, invocation) -> None:
+        from shani_link import contacts
+        a = params.unpack()
+        s = lambda v: GLib.Variant("(s)", (_json(v),))
+
+        def run():
+            if method == "Search":
+                return s([contacts.as_json(c) for c in contacts.search(a[0], int(a[1]))])
+            if method == "Lookup":
+                _name, found = contacts.lookup(a[0])
+                return s(contacts.as_json(found) if found is not None else {})
+            raise ValueError(f"no method {method}")
+        self._answer(invocation, run)
+
+    def _calls_call(self, _conn, _sender, _path, _iface, method, params, invocation) -> None:
+        from shani_link import calls_log, lines
+        a = params.unpack()
+        b = lambda v: GLib.Variant("(b)", (bool(v),))
+
+        def run():
+            if method == "Lines":
+                return GLib.Variant("(s)", (_json(lines.available()),))
+            if method == "Dial":
+                return GLib.Variant("(s)", (lines.dial(a[0], a[1]),))
+            if method == "Answer":
+                return b(lines.answer(a[0]))
+            if method == "Hangup":
+                return b(lines.hangup(a[0]))
+            if method == "SendDtmf":
+                return b(lines.dtmf(a[0], a[1]))
+            if method == "RecentCalls":
+                return GLib.Variant("(s)", (_json(calls_log.rows(int(a[0]))),))
+            if method == "DeleteCall":
+                return b(calls_log.delete(a[0]))
+            if method == "ClearCalls":
+                calls_log.clear()
+                return None
+            raise ValueError(f"no method {method}")
+        self._answer(invocation, run)
 
     def device_event(self, source: str, kind: str, **info) -> None:
         GLib.idle_add(lambda: self.conn.emit_signal(None, ROOT_PATH, ROOT_IFACE, "DeviceEvent",
@@ -165,8 +267,9 @@ class Service:
         from shani_link.watch_companion import WatchCompanion
         from shani_link.ble_peripheral import RemoteService
         from shani_link.map_notify import MessageWatcher
+        from shani_link.mm_voice import ModemWatcher
         cfg = self.settings
-        self.devices = [IncomingCallWatcher(cfg), ObexReceiver(cfg),
+        self.devices = [IncomingCallWatcher(cfg), ModemWatcher(cfg), ObexReceiver(cfg),
                         WatchCompanion(cfg, on_voice=lambda start: self.device_event("watch", "voice", start=start)),
                         RemoteService(cfg), MessageWatcher(cfg)]
         if cfg.get_bool("bluetooth-media-remote-enabled", True):

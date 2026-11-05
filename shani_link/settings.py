@@ -23,10 +23,12 @@ KEYS = (
     "bluetooth-call-enabled", "bluetooth-gatt-enabled", "phone-control-enabled",
     "phone-remote-enabled", "phone-messages-read-enabled", "phone-messages-send-enabled",
     "watch-companion-enabled", "watch-nowplaying-enabled", "watch-weather-enabled",
-    "landline-enabled", "bluetooth-media-remote-enabled",
+    "landline-enabled", "bluetooth-media-remote-enabled", "modem-call-enabled",
 )
-#: the one that was on unless turned off (music control from Bluetooth remotes)
-DEFAULT_ON = {"bluetooth-media-remote-enabled"}
+#: the ones on unless turned off: music control from Bluetooth remotes, and the
+#: computer's own mobile modem ringing (it is this computer's phone line, as
+#: the landline is; with no voice modem it never rings at all)
+DEFAULT_ON = {"bluetooth-media-remote-enabled", "modem-call-enabled"}
 CHRONOA_SCHEMA = "org.shani.chronoa"
 
 

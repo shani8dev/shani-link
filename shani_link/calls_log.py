@@ -38,6 +38,7 @@ MAX_ROWS = 500
 LINE_NAMES = {"landline": "Landline", "phone": "Phone", "modem": "Mobile"}
 
 _missed: List[Callable[[dict], None]] = []
+_logged: List[Callable[[dict], None]] = []
 _guard = threading.Lock()
 
 
@@ -133,12 +134,11 @@ def add(line: str, number: str, direction: str, answered: bool, seconds: int = 0
             _write(current)
     except OSError:
         logger.warning("could not log the call", exc_info=True)
-    if row["missed"]:
-        for callback in list(_missed):
-            try:
-                callback(row)
-            except Exception:  # noqa: BLE001 - a broken notifier is not a lost call
-                logger.exception("missed-call listener failed")
+    for callback in list(_logged) + (list(_missed) if row["missed"] else []):
+        try:
+            callback(row)
+        except Exception:  # noqa: BLE001 - a broken notifier is not a lost call
+            logger.exception("call-log listener failed")
     return row
 
 
@@ -155,6 +155,13 @@ def delete(row_id: str) -> bool:
 def clear() -> None:
     with _locked():
         _write([])
+
+
+def on_logged(callback: Callable[[dict], None]) -> Callable[[], None]:
+    """`callback(row)` for every call as it is logged (the service's CallLogged
+    signal, so an open history refreshes); returns the undo."""
+    _logged.append(callback)
+    return lambda: callback in _logged and _logged.remove(callback)
 
 
 def on_missed(callback: Callable[[dict], None]) -> Callable[[], None]:

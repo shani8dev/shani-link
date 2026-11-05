@@ -62,3 +62,44 @@ def test_a_live_call_crosses_the_bus_as_its_fields_not_a_repr():
     view = call_view(call)
     assert json.loads(json.dumps(view)) == {"number": "+911234", "name": "Amma", "state": "active",
                                             "held": True, "outgoing": True}
+
+
+def _gdbus(path, method, *args):
+    iface = {"/dev/shani/Link/Contacts": "dev.shani.Link.Contacts",
+             "/dev/shani/Link/Calls": "dev.shani.Link.Calls"}[path]
+    return f"gdbus call --session -d dev.shani.Link -o {path} -m {iface}.{method} " + " ".join(args) + "\n"
+
+
+def test_contacts_are_searched_and_numbers_named_over_the_bus(tmp_path, monkeypatch):
+    """The shell's dialer and Chronoa name a number the same way the app does."""
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    sys.path.insert(0, ROOT)
+    from shani_link import contacts
+    contacts.book().save(contacts.Contact(full_name="Asha Rao", given="Asha", family="Rao",
+                                          phones=[("cell", "+919800000001")],
+                                          emails=[("work", "asha@example.org")]))
+    out = on_bus(_gdbus("/dev/shani/Link/Contacts", "Search", "asha", "10")
+                 + _gdbus("/dev/shani/Link/Contacts", "Lookup", "09800000001")
+                 + _gdbus("/dev/shani/Link/Contacts", "Lookup", "12345"), tmp_path)
+    assert out.count('Asha Rao') >= 2, out
+    assert '"source": "local"' in out and "asha@example.org" in out
+    assert "('{}',)" in out, "an unknown number must come back as {} - " + out
+
+
+def test_recent_calls_cross_the_bus_and_can_be_deleted_and_cleared(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    sys.path.insert(0, ROOT)
+    from shani_link import calls_log
+    keep = calls_log.add("landline", "+911", "in", False)
+    drop = calls_log.add("modem", "+912", "out", True, seconds=20)
+    out = on_bus(_gdbus("/dev/shani/Link/Calls", "DeleteCall", drop["id"])
+                 + _gdbus("/dev/shani/Link/Calls", "RecentCalls", "10")
+                 + _gdbus("/dev/shani/Link/Calls", "Lines")
+                 + _gdbus("/dev/shani/Link/Calls", "Dial", "modem", "100")
+                 + _gdbus("/dev/shani/Link/Calls", "ClearCalls")
+                 + _gdbus("/dev/shani/Link/Calls", "RecentCalls", "10"), tmp_path)
+    assert "(true,)" in out and keep["id"] in out and drop["id"] not in out, out
+    assert '"missed": true' in out
+    assert "('[]',)" in out, "no line here, and the cleared history, are both []: " + out
+    assert "dev.shani.Link.Error" in out and "not connected" in out, out
+    assert calls_log.rows() == []
