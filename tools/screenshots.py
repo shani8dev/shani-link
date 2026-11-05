@@ -352,16 +352,9 @@ def _scroll_to_end(win, pump, end: bool = True) -> None:
 
 
 def _open_first_thread(panel, pump) -> None:
-    for w in _walk(panel.threads):
-        if hasattr(w, "open_thread"):
-            w.open_thread()
-            break
-    else:
-        from gi.repository import Gtk
-        for w in _walk(panel.threads):
-            if isinstance(w, Gtk.Button) and w.get_label() == "Open":
-                w.emit("clicked")
-                break
+    first = next((w for w in _walk(panel.threads) if hasattr(w, "open_thread")), None)
+    if first is not None:
+        first.open_thread()
     pump(1.0)
 
 
@@ -376,7 +369,6 @@ def _open_contact(panel, pump) -> None:
 
 
 def _close_contact(panel, pump) -> None:
-    view = panel.contacts_view
     panel.contacts_view.back()
     pump(0.5)
 
