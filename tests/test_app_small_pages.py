@@ -94,6 +94,20 @@ def test_radio_is_ready_only_with_a_dongle_and_the_tools(monkeypatch):
     assert asked == [{"action": "tune", "frequency": "98.3"}]
     _press(page, "Tune", frequency="88.8")
     assert asked[-1] == {"action": "tune", "frequency": "88.8"}
+    _press(page, "Volume", volume="50")
+    _press(page, "Stop")
+    assert asked[-2:] == [{"action": "volume", "volume": "50"}, {"action": "stop"}]
+
+
+def test_radio_tune_stop_and_volume_need_the_stick(monkeypatch):
+    from shani_link import fm_radio
+    from shani_link.app import tools_pages
+    # rtl_fm is installed but no dongle: Tune, Stop and Volume stay greyed out
+    monkeypatch.setattr(fm_radio, "hardware", lambda: "rtl_fm is installed (/x)\nno RTL2832U attached.")
+    page = tools_pages.build_radio()
+    pump(lambda: page.status() == "attention", 5)
+    for label in ("Tune", "Stop", "Volume"):
+        assert not page.buttons[label][0].get_sensitive(), label
 
 
 def test_no_page_asks_for_a_typed_value_up_front(monkeypatch):
@@ -141,23 +155,64 @@ def test_nfc_says_why_there_is_no_reader_and_reads_through_the_engine(monkeypatc
     assert asked == [{"action": "read", "seconds": "15"}]
 
 
+def _transmitter(monkeypatch, ir_remote, why=""):
+    """A transmitter lircd drives, with one remote: no /dev/lirc* is opened."""
+    monkeypatch.setattr(ir_remote, "send_abilities", lambda: {"send": why, "send-code": why})
+    monkeypatch.setattr(ir_remote, "remotes", lambda: (["tv"], ""))
+    monkeypatch.setattr(ir_remote, "keys", lambda remote: (["KEY_POWER", "KEY_MUTE"], ""))
+
+
 def test_remote_sends_a_code_through_the_engine(monkeypatch):
     from shani_link import ir_remote
     from shani_link.app import tools_pages
     monkeypatch.setattr(ir_remote, "device_report", lambda: (["/dev/lirc0"], ""))
+    _transmitter(monkeypatch, ir_remote)
     asked = []
     monkeypatch.setattr(ir_remote, "_run", lambda arguments: asked.append(arguments) or "Sent.")
     page = tools_pages.build_remote()
     pump(lambda: page.status() == "ok", 5)
     assert any("/dev/lirc0" in t for t in texts(page))
-    assert _press(page, "Send", protocol="nec", address="4", command="8") == "Sent."
+    assert _press(page, "Send a code", protocol="nec", address="4", command="8") == "Sent."
     assert asked == [{"action": "send", "protocol": "nec", "address": "4", "command": "8"}]
+
+
+def test_remote_presses_a_button_lircd_listed(monkeypatch):
+    """Remote and button are picked from irsend's lists; nothing is typed."""
+    from shani_link import ir_remote
+    from shani_link.app import tools_pages
+    monkeypatch.setattr(ir_remote, "device_report", lambda: (["/dev/lirc0"], ""))
+    _transmitter(monkeypatch, ir_remote)
+    asked = []
+    monkeypatch.setattr(ir_remote, "_run", lambda arguments: asked.append(arguments) or "Sent KEY_MUTE of tv.")
+    page = tools_pages.build_remote()
+    key = page.inputs["Send.key"]
+    pump(lambda: [v for _l, v in key.options] == ["KEY_POWER", "KEY_MUTE"], 5)
+    assert [label for label, _v in key.options] == ["Power", "Mute"]
+    assert page.buttons["Send"][0].get_sensitive()
+    assert _press(page, "Send", key="KEY_MUTE") == "Sent KEY_MUTE of tv."
+    assert asked == [{"action": "send-key", "remote": "tv", "key": "KEY_MUTE"}]
+    assert _typed_entries(page) == []
+
+
+def test_send_is_greyed_out_without_a_transmitter(monkeypatch):
+    from shani_link import ir_remote
+    from shani_link.app import tools_pages
+    monkeypatch.setattr(ir_remote, "device_report", lambda: (["/dev/lirc0"], ""))
+    _transmitter(monkeypatch, ir_remote, why="no infrared transmitter: /dev/lirc0 can only receive")
+    page = tools_pages.build_remote()
+    pump(lambda: page.status() == "ok", 5)
+    assert page.buttons["Receive"][0].get_sensitive(), "a receiver still receives"
+    for label in ("Send", "Send a code"):
+        button = page.buttons[label][0]
+        assert not button.get_sensitive(), label
+        assert "can only receive" in button.get_tooltip_text()
 
 
 def test_an_engine_that_raises_is_a_sentence(monkeypatch):
     from shani_link import ir_remote
     from shani_link.app import tools_pages
     monkeypatch.setattr(ir_remote, "device_report", lambda: (["/dev/lirc0"], ""))
+    _transmitter(monkeypatch, ir_remote)
 
     def boom(arguments):
         raise OSError("ir-ctl vanished")

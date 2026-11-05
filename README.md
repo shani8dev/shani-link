@@ -26,8 +26,9 @@ finds, and every page says plainly what it needs when something is missing.
   file sent to the phone, over a USB cable.
 - **Sharing files** - send a file to your phone; receive what your phone
   shares to the computer over Bluetooth into Downloads.
-- **FM radio, NFC and infrared** - play an FM recording, read NFC tags and
-  write links to stickers, learn the buttons of a remote control.
+- **FM radio, NFC and infrared** - listen to an FM station live or play a
+  recording, read NFC tags and write links to stickers, learn the buttons of
+  a remote control and press them from here.
 
 ### What you need for each
 
@@ -41,9 +42,9 @@ finds, and every page says plainly what it needs when something is missing.
 | Android phone tools | A USB cable and USB debugging turned on in the phone's Developer options |
 | Phone link (files over Wi-Fi) | The KDE Connect app on the phone, on the same Wi-Fi |
 | This screen on your phone | The phone's Bluetooth tethering, and GStreamer on this computer |
-| FM radio | An RTL-SDR USB stick (RTL2832U). Today it plays and searches **recordings**; live listening is not built yet |
+| FM radio | An RTL-SDR USB stick (RTL2832U) and `rtl_fm` (rtl-sdr) to listen live, played through PipeWire (`pw-play`); recordings play without the stick |
 | NFC | A USB NFC reader that works with libnfc (for example an ACR122U) |
-| Infrared remote | An infrared receiver (a `/dev/lirc*` device) to learn buttons. Sending codes is not built yet: it shows the code it would send |
+| Infrared remote | An infrared receiver (a `/dev/lirc*` device) to learn buttons; a transmitter (a `/dev/lirc*` that can send) to press a remote's buttons through lircd (`irsend`), or send a raw code with `ir-ctl` (v4l-utils) |
 
 ## A tour
 

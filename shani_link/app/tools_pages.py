@@ -61,8 +61,9 @@ class Action:
     what: str
     fields: List[Field] = field(default_factory=list)
     run: Callable[[Dict[str, str]], str] = lambda values: ""
-    #: greyed out until the page's hardware report says it is ready
-    needs_hardware: bool = True
+    #: greyed out until the page's hardware report says it is ready; a string
+    #: names one of the report's abilities instead (see `_action_page`)
+    needs_hardware: "bool | str" = True
 
 
 class _Input:
@@ -70,6 +71,7 @@ class _Input:
 
     def __init__(self, spec: Field) -> None:
         self.spec = spec
+        self.options: List[Tuple[str, str]] = list(spec.options)
         self.path = ""
         self.widget: Gtk.Widget
         if spec.kind == "choice":
@@ -108,7 +110,14 @@ class _Input:
             self.widget = box
 
     def _other(self) -> bool:
-        return self.spec.custom and self.dropdown.get_selected() == len(self.spec.options)
+        return self.spec.custom and self.dropdown.get_selected() == len(self.options)
+
+    def set_options(self, options: Sequence[Tuple[str, str]]) -> None:
+        """Replace a choice's list (one read from the hardware, say)."""
+        self.options = list(options)
+        names = [label for label, _v in self.options] + ([OTHER] if self.spec.custom else [])
+        self.dropdown.set_model(Gtk.StringList.new(names))
+        self.dropdown.set_selected(0 if names else Gtk.INVALID_LIST_POSITION)
 
     def _choose(self) -> None:
         dialog = Gtk.FileDialog(title=self.spec.label, modal=True)
@@ -141,7 +150,7 @@ class _Input:
         """Put `value` in the field (what a test, or a learned code, does)."""
         kind = self.spec.kind
         if kind == "choice":
-            values = [v for _l, v in self.spec.options]
+            values = [v for _l, v in self.options]
             if value in values:
                 self.dropdown.set_selected(values.index(value))
             elif self.spec.custom:
@@ -161,7 +170,7 @@ class _Input:
         if kind == "choice":
             if self._other():
                 return self.entry.get_text().strip()
-            options = self.spec.options
+            options = self.options
             index = self.dropdown.get_selected()
             return options[index][1] if 0 <= index < len(options) else ""
         if kind == "file":
@@ -172,14 +181,19 @@ class _Input:
 
 
 def _action_page(title: str, subtitle: str, icon: str,
-                 report: Callable[[], "tuple[bool, str]"],
+                 report: Callable[[], tuple],
                  actions: List[Action], missing: "tuple[str, str]",
-                 ready_words: str = "") -> Gtk.Widget:
+                 ready_words: str = "",
+                 after_report: "Callable[[Any, Any], None] | None" = None) -> Gtk.Widget:
     """A page: the hardware report, then one row per action.
 
     `run(values)` is called on a worker with the chosen values and returns the
-    engine's sentence. `report()` answers `(ready, the engine's own words)`;
-    `missing` is (headline, what to plug in) for a person, shown when not ready.
+    engine's sentence. `report()` answers `(ready, the engine's own words)`, or
+    `(ready, words, abilities)` where `abilities` maps a name to why it cannot
+    be done ("" when it can): an action whose `needs_hardware` is that name is
+    live only when its why is "", and the why is its tooltip. `missing` is
+    (headline, what to plug in) for a person, shown when not ready.
+    `after_report(page, result)` runs on the main thread once the report is in.
     """
     page, set_content = common.surface(title, subtitle)
     recorder = common.StatusRecorder()
@@ -196,11 +210,15 @@ def _action_page(title: str, subtitle: str, icon: str,
 
     def reported(result: Any) -> None:
         common.clear(status_slot)
+        abilities: Dict[str, str] = {}
         if isinstance(result, Exception):
             ready, text = False, f"Could not ask: {result}"
         else:
-            ready, text = result
+            ready, text = result[0], result[1]
+            if len(result) > 2:
+                abilities = dict(result[2])
         page.ready = bool(ready)
+        page.abilities = abilities
         lines = [ln.strip() for ln in str(text).splitlines() if ln.strip()] or ["No answer"]
         if ready and ready_words:
             # the person's words in front, the engine's (paths, USB ids) under Details
@@ -218,10 +236,18 @@ def _action_page(title: str, subtitle: str, icon: str,
             status_slot.append(card)
             status_slot.append(common.details("Details", "\n".join(lines)))
         for label, (button, _inputs) in page.buttons.items():
-            if getattr(button, "needs_hardware", False):
+            needs = getattr(button, "needs_hardware", False)
+            if isinstance(needs, str):
+                why = abilities.get(needs, headline_for(missing))
+                button.set_sensitive(not why)
+                button.set_tooltip_text(why or "")
+            elif needs:
                 button.set_sensitive(bool(ready))
                 button.set_tooltip_text("" if ready else headline_for(missing))
+        if after_report is not None:
+            after_report(page, result)
     page.ready = False
+    page.abilities = {}
 
     def headline_for(pair: "tuple[str, str]") -> str:
         return pair[0]
@@ -254,7 +280,9 @@ def _action_page(title: str, subtitle: str, icon: str,
             output.set_text(f"{action.label}...")
 
             def done(result: Any) -> None:
-                button.set_sensitive(True)
+                needs = action.needs_hardware
+                button.set_sensitive(not page.abilities.get(needs, "x") if isinstance(needs, str)
+                                     else True)
                 output.set_text(f"{action.label} failed: {result}" if isinstance(result, Exception)
                                 else str(result))
             common.in_thread(lambda: action.run(values), done, name=f"link-{action.label.lower()}")
@@ -280,6 +308,10 @@ FM_PRESETS = ("91.1", "91.9", "92.7", "93.5", "94.3", "95.0", "98.3", "100.1",
               "101.0", "102.8", "104.0", "104.8", "106.4", "107.2")
 
 
+#: The radio's volume steps (percent of its stream, not of the speakers).
+VOLUMES = (100, 75, 50, 25, 10)
+
+
 def build_radio(app: Any = None) -> Gtk.Widget:
     from shani_link import fm_radio
 
@@ -290,11 +322,14 @@ def build_radio(app: Any = None) -> Gtk.Widget:
         "Radio", "FM radio with a USB radio stick, or played back from a recording "
         "of one.", "audio-speakers-symbolic",
         lambda: (lambda text: ("RTL2832U dongle is attached" in text
-                               and "is installed" in text, text))(fm_radio.hardware()),
-        [Action("Tune", "Get a station ready (live listening is not built yet: "
-                "it shows how it would tune)",
+                               and "rtl_fm is installed" in text, text))(fm_radio.hardware()),
+        [Action("Tune", "Listen to a station live, through this computer's speakers",
                 [Field("frequency", "Frequency", options=[(f"{f} MHz", f) for f in FM_PRESETS],
                        custom=True, placeholder="MHz")], run("tune")),
+         Action("Stop", "Stop listening", [], run("stop")),
+         Action("Volume", "The radio's own volume, beside your other sounds",
+                [Field("volume", "Volume", options=[(f"{v}%", str(v)) for v in VOLUMES])],
+                run("volume")),
          Action("Play a recording", "Turn a recorded FM capture (.wav) into sound",
                 [Field("file", "Recording", kind="file")], run("decode"), needs_hardware=False),
          Action("Find stations", "Look for stations in a recording of the whole band",
@@ -336,24 +371,66 @@ def build_nfc(app: Any = None) -> Gtk.Widget:
 # --- infrared remote ------------------------------------------------------------
 
 def build_remote(app: Any = None) -> Gtk.Widget:
+    """Receive a remote's button; send one of lircd's remotes' buttons (picked
+    from irsend's own lists, never typed), or a raw NEC/RC-6 code with ir-ctl.
+    Both sends are live only once a /dev/lirc* node says it can send."""
     from shani_link import ir_remote
 
     def run(action: str) -> Callable[[Dict[str, str]], str]:
         return lambda values: ir_remote._run({"action": action, **values})
 
+    known: Dict[str, List[str]] = {"remotes": []}
+
+    def report() -> tuple:
+        found, why = ir_remote.device_report()
+        # no /dev/lirc* or rc device at all: nothing to ask the transmitters
+        abilities = (ir_remote.send_abilities() if found
+                     else {"send": why, "send-code": why})
+        known["remotes"] = ir_remote.remotes()[0] if not abilities.get("send") else []
+        return (bool(found), why or "Infrared is available on this machine: " + ", ".join(found),
+                abilities)
+
+    def remote_chosen(page: Any) -> None:
+        remote = page.inputs["Send.remote"].value()
+        key_input = page.inputs["Send.key"]
+        if not remote:
+            key_input.set_options([])
+            return
+
+        def got(result: Any) -> None:
+            names = [] if isinstance(result, Exception) else result[0]
+            if page.inputs["Send.remote"].value() == remote:
+                key_input.set_options([(_key_label(k), k) for k in names])
+        common.in_thread(lambda: ir_remote.keys(remote), got, name="link-ir-keys")
+
+    def reported(page: Any, _result: Any) -> None:
+        page.inputs["Send.remote"].set_options([(r, r) for r in known["remotes"]])
+        remote_chosen(page)
+
     protocols = [(p.upper(), p) for p in ir_remote.PROTOCOLS]
-    return _action_page(
-        "Remote", "Learn the buttons of an infrared remote control with an "
-        "infrared receiver.", "input-gaming-symbolic",
-        lambda: (lambda found, why: (bool(found), why or "Infrared is available on this machine: "
-                                     + ", ".join(found)))(*ir_remote.device_report()),
+    page = _action_page(
+        "Remote", "Learn the buttons of an infrared remote control, and press "
+        "them from here with an infrared transmitter.", "input-gaming-symbolic",
+        report,
         [Action("Receive", "Point a remote at the receiver, press Receive, then "
                 "press a button on the remote", [], run("receive")),
-         Action("Send", "Get a button's code ready (sending is not built yet: "
-                "it shows the code it would send)",
+         Action("Send", "Press a button of a remote lircd knows",
+                [Field("remote", "Remote"), Field("key", "Button")],
+                run("send-key"), needs_hardware="send"),
+         Action("Send a code", "Send a NEC or RC-6 code by its numbers",
                 [Field("protocol", "Kind of remote", options=protocols),
                  Field("address", "Address", kind="number"),
-                 Field("command", "Button", kind="number")], run("send"))],
+                 Field("command", "Button", kind="number")], run("send"),
+                needs_hardware="send-code")],
         ("No infrared device found",
          "Plug in a USB infrared receiver to learn the buttons of your "
-         "remote controls."))
+         "remote controls, or a transmitter to press them from here."),
+        after_report=reported)
+    page.inputs["Send.remote"].dropdown.connect("notify::selected", lambda *_a: remote_chosen(page))
+    return page
+
+
+def _key_label(key: str) -> str:
+    """lircd's KEY_VOLUMEUP as "Volumeup": the name without the prefix."""
+    name = key[4:] if key.upper().startswith("KEY_") else key
+    return name.replace("_", " ").capitalize() or key

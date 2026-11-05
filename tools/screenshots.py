@@ -163,6 +163,9 @@ def stand_ins() -> None:
                                  "  Bus 001 Device 004: ID 0bda:2838 Realtek RTL2838UHIDIR")
     nfc.readers = lambda: (["ACS ACR122U PICC Interface"], "")
     ir_remote.device_report = lambda: (["/dev/lirc0"], "")
+    ir_remote.send_abilities = lambda: {"send": "", "send-code": ""}
+    ir_remote.remotes = lambda: (["tv"], "")
+    ir_remote.keys = lambda _remote: (["KEY_POWER", "KEY_VOLUMEUP", "KEY_MUTE"], "")
 
     # an Android phone on USB, and the Wi-Fi phone link paired
     from shani_link.app import android as android_page
