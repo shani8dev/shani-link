@@ -50,8 +50,7 @@ logger = logging.getLogger(__name__)
 
 TITLE = "Paired"
 ICON = "network-wireless-symbolic"
-SUBTITLE = ("The phone and the devices paired with this machine, through the "
-            "desktop's own phone link.")
+SUBTITLE = "Your phone and the other devices paired with this computer."
 
 #: The four states in which there is no list to show, plus the one there is.
 #: Declared rather than inferred from the wording, so a caller can tell "one of
@@ -105,10 +104,9 @@ HEALTH_SUMMARY = {
 
 BODY = {
     STATE_NO_LINK: (
-        "Pair your phone over Bluetooth with Connect a device below - calls, texts and "
-        "music then work here. Or open the Phone link tab: install the KDE Connect app "
-        "on your phone (Android or iPhone), be on the same Wi-Fi, and pair - nothing "
-        "else is needed on this computer."
+        "Pair your phone over Bluetooth with Connect a device below, and calls, texts "
+        "and music work here. Or open the Phone link tab and use the KDE Connect app "
+        "on your phone (Android or iPhone) on the same Wi-Fi."
     ),
     STATE_LINK_DOWN: (
         "The phone app on this computer (KDE Connect or GSConnect) is installed but did "
@@ -135,6 +133,7 @@ WHEN_CSS = "devices-when"
 BACKEND_TITLE = {
     "gsconnect": "GSConnect (GNOME)",
     "kdeconnect": "KDE Connect (Plasma)",
+    "bluetooth": "Bluetooth",
 }
 
 #: Longest error text shown. `phone.py` truncates its own messages; this is for
@@ -264,10 +263,10 @@ def _kind(device: Any) -> str:
     "laptop" would be inventing one.
     """
     if not getattr(device, "paired", False):
-        return "known to the link but not paired"
+        return "Seen, but not paired"
     if getattr(device, "reachable", False):
-        return "paired, reachable right now"
-    return "paired, not reachable (off, out of range, or on another network)"
+        return "Connected"
+    return "Not connected right now (off, out of range, or on another network)"
 
 
 def _battery(device: Any) -> str:
@@ -278,16 +277,15 @@ def _battery(device: Any) -> str:
     and wherever `busctl` is absent, and no reading is not 0%.
     """
     if not getattr(device, "reachable", False):
-        return "battery: not read, the device is not reachable right now"
+        return ""
     try:
         reading = ph.battery(device)
     except Exception as exc:  # noqa: BLE001 - a battery is not a reason to fail a row
-        return (f"battery: could not be read "
-                f"({type(exc).__name__}: {str(exc)[:MAX_DETAIL]})")
+        return f"Battery could not be read ({str(exc)[:MAX_DETAIL]})"
     if not reading:
-        return "battery: this backend does not report one"
+        return ""                    # not reported is not 0%: nothing is said
     percent, charging = reading[0], bool(reading[1])
-    return f"battery: {percent}%{' and charging' if charging else ''}"
+    return f"Battery {percent}%{', charging' if charging else ''}"
 
 
 def _add_row(container: Gtk.Widget, row: Gtk.Widget) -> None:
@@ -327,12 +325,10 @@ def _device_row(device: Any, read_at: float) -> Gtk.Widget:
     escaping rather than straight into a label.
     """
     name = getattr(device, "name", "") or getattr(device, "id", "") or "(unnamed)"
-    subtitle = "\n".join((
-        "kind: " + _kind(device),
-        _battery(device),
-        "last known at " + time.strftime("%H:%M:%S", time.localtime(read_at)),
-    ))
-    widget = common.row(name, subtitle, suffix=_stamp(read_at))
+    subtitle = " · ".join(part for part in (_kind(device), _battery(device)) if part)
+    widget = common.row(name, subtitle,
+                        suffix=Gtk.Image(icon_name="phone-symbolic" if getattr(device, "reachable", False)
+                                         else "network-offline-symbolic"))
     widget.add_css_class(ROW_CSS)
     widget.add_css_class(DEVICE_CSS)
     return widget
@@ -352,13 +348,9 @@ def build(app) -> Gtk.Widget:
         """An empty state, with the status row that matches its own word."""
         column = common.page_body(18)
         column.set_margin_top(12)
-        # `recorder.row` - not `common.status_row`: this is the write that
-        # decides the sidebar's dot, and a plain row here would leave the dot
-        # reading whatever the previous panel said. The summary is the one-clause
-        # reason, not the body - see `HEALTH_SUMMARY` for why the two places this
-        # panel says the same thing must not say it identically.
-        column.append(recorder.row(state.health, state.headline,
-                                   HEALTH_SUMMARY.get(state.state, "")))
+        # The empty state alone, recorded for page.status(): a status row above
+        # it ("Could not determine - ...") said the same thing a second time.
+        recorder.set(state.health)
         column.append(common.empty_state(
             ICON, _text(state.headline), _text(state.body),
             child=common.connect_button(app)))
@@ -394,23 +386,12 @@ def build(app) -> Gtk.Widget:
     body = common.page_body(18)
     body.set_margin_top(12)
     body.set_margin_bottom(12)
+    # One line: how many, and how they are reached. (It was a status row, a
+    # banner saying the same, and a "backend" group naming a module slug.)
     body.append(recorder.row(
         common.STATUS_OK,
         f"{plural(len(devices), 'device')} paired",
-        f"read once at {time.strftime('%H:%M:%S', time.localtime(read_at))}"))
-    body.append(_revealed(common.banner(
-        f"{len(devices)} paired device{'' if len(devices) == 1 else 's'}, read once "
-        f"at {time.strftime('%H:%M:%S', time.localtime(read_at))}. Press Reload "
-        "to ask again; nothing here is polled in the background."
-    )))
-
-    link = common.group("Phone link", "The backend this panel reads.")
-    _add_row(link, _row(
-        BACKEND_TITLE.get(str(which), str(which)),
-        "Read through the phone link only. Calls, texts and files over plain "
-        "Bluetooth are on the Phone page.",
-    ))
-    body.append(link)
+        f"through {BACKEND_TITLE.get(str(which), str(which))}"))
 
     group = common.group("Paired devices")
     for device in devices:

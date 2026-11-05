@@ -62,7 +62,7 @@ ONE_PHONE_BOOTLOADER = ("List of devices attached\nBB1234567  bootloader usb:1-1
                         " product:raven model:Pixel_6_Pro device:raven"
                         " transport_id:5")
 NONE_CONNECTED = "List of devices attached"
-HEADLINE_NONE = "No phone is connected with USB debugging"
+HEADLINE_NONE = "No Android phone plugged in"
 NO_ADB = "adb (android-tools) is not installed."
 
 
@@ -269,7 +269,8 @@ class TestTheDevices:
                 "device:raven transport_id:6")
         _answers(monkeypatch, "List of devices attached\n" + line)
         text = _labels(_run(a.build(App())))
-        assert f"Pixel 6 Pro - {state}" in text, (
+        word = {"device": "ready"}.get(state, state)   # adb's "device" means ready to a person
+        assert f"Pixel 6 Pro - {word}" in text, (
             f"{state} did not keep adb's own word beside the model")
         assert "fastboot" not in text, (
             f"{state} was given the bootloader sentence, and neither manual "
@@ -398,7 +399,7 @@ class TestThePhoneActions:
         monkeypatch.setattr(engine, "open_url", lambda serial, url: calls.append((serial, url)) or f"Opened {url} on the phone.")
         actions = page.actions["emulator-5554"]
         actions.link_button.emit("clicked")
-        assert actions.note.get_text().startswith("Type a link first") and calls == []
+        assert actions.note.get_text().startswith("Paste or type a link first") and calls == []
         actions.link_entry.set_text("https://shani.dev")
         actions.link_button.emit("clicked")
         assert self._settle(actions, "Opening https://shani.dev on the phone...") == \

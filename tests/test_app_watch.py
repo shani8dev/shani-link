@@ -142,7 +142,10 @@ class TestTheDevices:
         _patch(monkeypatch, paired=lambda: [])
         page = w.build(App())
         text = _labels(_run(page))
-        assert "No Bluetooth devices are paired" in text
+        assert "No watch yet" in text and "Pair a watch or band" in text
+        # said once, plainly: no status row repeating it above or below
+        assert "Could not determine" not in text and "Not known yet" not in text
+        assert text.count("No watch yet") == 1
 
     def test_an_adapter_that_will_not_answer_is_not_nothing_paired(self, monkeypatch):
         """The distinction the module's docstring insists on, kept.
@@ -158,7 +161,7 @@ class TestTheDevices:
         page = w.build(App())
         text = _labels(_run(page))
         assert "did not answer" in text
-        assert "No Bluetooth devices are paired" not in text
+        assert "No watch yet" not in text
 
     def test_the_listing_row_states_a_capability_and_not_a_measurement(
             self, monkeypatch):
@@ -656,3 +659,25 @@ def test_every_state_has_its_own_headline_and_health():
             f"{state} has no wording of its own and falls through to its key")
         if state != w.STATE_PERMITTED:
             assert state in w.HEALTH
+
+
+def test_the_watch_comes_first_and_the_bluetooth_details_are_folded(monkeypatch):
+    """A person opens Watch for the watch: its dashboard is the first thing on
+    the page, and every device's Bluetooth answers (services, characteristics)
+    are folded under its name below - not in front of the steps."""
+    from shani_link import moyoung
+    from shani_link.app import watch_dashboard
+    _patch(monkeypatch, paired=lambda: [("C4:11:22:33:44:55", "FB BGS002")],
+           services=lambda mac: [BATTERY_SERVICE], attributes=lambda mac: [])
+    monkeypatch.setattr(w, "_moyoung_watches", lambda: [("C4:11:22:33:44:55", "FB BGS002")])
+    monkeypatch.setattr(moyoung, "health_summary", lambda mac: {})
+    page = w.build(App())
+    shown = _run(page)
+    nodes = _walk(shown)
+    nodes.reverse()            # _walk pops from a stack; tree order is the reverse
+    order = [type(n).__name__ for n in nodes
+             if isinstance(n, (watch_dashboard.WatchDashboard, Adw.ExpanderRow))]
+    assert order and order[0] == "WatchDashboard", order
+    expander = next(n for n in nodes if isinstance(n, Adw.ExpanderRow))
+    assert not expander.get_expanded(), "the Bluetooth details are open by default"
+    assert "Not known yet" not in _labels(shown) and "Could not determine" not in _labels(shown)

@@ -36,13 +36,14 @@ logger = logging.getLogger(__name__)
 
 TITLE = "Phone link"
 ICON = "phone-symbolic"
-SUBTITLE = ("Find a phone on this network and put something on it. This "
-            "computer speaks the KDE Connect LAN protocol.")
+SUBTITLE = ("Send files to your phone over Wi-Fi, with the KDE Connect app "
+            "on the phone (Android or iPhone).")
 
 LOOK_SECONDS = 5.0
 
-NOT_PAIRED = "No phone is paired"
-NOT_PAIRED_WHY = ("Pair one to send it files. The phone's owner taps Accept on it.")
+NOT_PAIRED = "No phone paired yet"
+NOT_PAIRED_WHY = ("Open KDE Connect on your phone, on the same Wi-Fi as this "
+                  "computer, then press Pair a phone and tap Accept on the phone.")
 
 
 def _hosts() -> str:
@@ -109,16 +110,20 @@ class _PhoneLinkView(Gtk.Box):
             forget.connect("clicked", self._on_forget)
             buttons.append(forget)
         else:
-            self._status_slot.append(self.status_recorder.row(
-                common.STATUS_ATTENTION, NOT_PAIRED, NOT_PAIRED_WHY))
+            # Not paired is where everybody starts - grey, not a red alarm.
+            self.status_recorder.set(common.STATUS_OFF)
+            first = common.row(NOT_PAIRED, NOT_PAIRED_WHY)
+            first.set_margin_start(12)
+            first.set_margin_end(12)
+            self._status_slot.append(first)
             buttons.append(self._connect_button("Pair a phone", suggested=True))
         self._status_slot.append(buttons)
         host = _hosts()
         if host:
-            self._status_slot.append(common.status_row(
-                common.STATUS_OK, f"Last phone seen: {host}",
-                f"speaking protocol version {lan_link.PROTOCOL_VERSION} on UDP "
-                f"{lan_link.UDP_PORT}"))
+            seen = _dim(f"Last phone seen at {host}.")
+            seen.set_margin_start(12)
+            seen.set_margin_top(6)
+            self._status_slot.append(seen)
 
     def _connect_button(self, label: str, suggested: bool = False) -> Gtk.Button:
         button = Gtk.Button(label=label)
@@ -143,7 +148,7 @@ class _PhoneLinkView(Gtk.Box):
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         for side in ("start", "end", "top"):
             getattr(box, f"set_margin_{side}")(12 if side in ("start", "end") else 10)
-        self.find = Gtk.Button(label=f"Look for phones ({LOOK_SECONDS:.0f}s)")
+        self.find = Gtk.Button(label="Look for phones")
         self.find.set_tooltip_text("Listen for a phone announcing itself")
         _label(self.find, "Look for phones on this network")
         self.find.connect("clicked", self._on_find)
@@ -153,7 +158,7 @@ class _PhoneLinkView(Gtk.Box):
         _label(self.announce, "Make this computer findable by a phone's KDE Connect app")
         self.announce.connect("clicked", self._on_announce)
         box.append(self.announce)
-        self.find_note = _dim("Nothing has been looked for yet.")
+        self.find_note = _dim("")
         box.append(self.find_note)
         return box
 
@@ -165,7 +170,7 @@ class _PhoneLinkView(Gtk.Box):
 
     def _found(self, result) -> None:
         self.find.set_sensitive(True)
-        self.find.set_label(f"Look for phones ({LOOK_SECONDS:.0f}s)")
+        self.find.set_label("Look for phones")
         if isinstance(result, Exception):
             self.find_note.set_label(f"Could not listen: {result}")
             return
@@ -174,9 +179,9 @@ class _PhoneLinkView(Gtk.Box):
             # **A real answer, not a failure** — the same sentence the skill
             # gives, because both are true and only one of them is actionable.
             self.find_note.set_label(
-                f"No phone announced itself in {LOOK_SECONDS:.0f} seconds. "
-                "Either nothing here is running the protocol, or this network "
-                "drops broadcast — corporate and university Wi-Fi often do.")
+                f"No phone answered in {LOOK_SECONDS:.0f} seconds. Check that KDE "
+                "Connect is open on the phone and that both are on the same Wi-Fi "
+                "(office and university Wi-Fi often block this).")
         else:
             self.find_note.set_label(
                 f"{plural(len(self._devices), 'device')} answered. Remembering the "
@@ -222,8 +227,7 @@ class _PhoneLinkView(Gtk.Box):
         if not self._devices:
             return nothing_state(
                 "phone-symbolic", "No phone found yet",
-                "Nothing has been looked for, or nothing answered. Press Look "
-                "for phones.")
+                "Open KDE Connect on your phone, then press Look for phones.")
         group = common.group()
         group.set_margin_start(12)
         group.set_margin_end(12)

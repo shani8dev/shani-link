@@ -230,7 +230,7 @@ class TestItSaysWhatIsNotThere:
         """**First, not after somebody tries** - and with the button that
         does it, not a sentence about a missing feature."""
         out = _run(broadway, "pairing_not_implemented", tmp_path)
-        assert "No phone is paired" in shown(out), shown(out)
+        assert "No phone paired yet" in shown(out), shown(out)
         assert "Pair a phone" in out["buttons"], out["buttons"]
 
     def test_paired_names_the_phone_and_offers_forget(self, broadway, tmp_path):
@@ -241,7 +241,7 @@ class TestItSaysWhatIsNotThere:
     def test_the_panels_claim_and_the_modules_agree(self, broadway, tmp_path):
         out = _run(broadway, "registry", tmp_path)
         assert out["pairing"] == "not paired", out
-        assert out["claims_not_implemented"] == "No phone is paired", out
+        assert out["claims_not_implemented"] == "No phone paired yet", out
 
 
 class TestTheDeviceState:
@@ -284,7 +284,7 @@ class TestThePressSaysWhatHappened:
         """Discovery with nothing around is an answer, on the page, and it is
         called out as the thing it is."""
         out = _run(broadway, "pressed_finds_nothing", tmp_path)
-        assert "No phone announced itself" in (out["note"] or ""), out["note"]
+        assert "No phone answered in" in (out["note"] or ""), out["note"]
         assert out["list_is_empty"] is True, out
 
 

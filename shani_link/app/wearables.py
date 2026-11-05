@@ -41,7 +41,8 @@ import gi
 
 gi.require_version("Gtk", "4.0")
 
-from gi.repository import GLib, Gtk, Pango  # type: ignore
+gi.require_version("Adw", "1")
+from gi.repository import Adw, GLib, Gtk, Pango  # type: ignore
 
 logger = logging.getLogger(__name__)
 
@@ -53,9 +54,8 @@ from shani_link.app import common
 
 TITLE = "Watch"
 ICON = "bluetooth-symbolic"
-SUBTITLE = ("Your watch - steps, sleep, heart rate, finding it - and what any "
-            "paired Bluetooth Low Energy device says about itself: a band's "
-            "battery and firmware, a sensor's stored reading.")
+SUBTITLE = ("Steps, sleep, heart rate and stress from your watch or fitness "
+            "band - and finding it when it is lost.")
 
 STATE_PERMITTED = "permitted"
 STATE_UNREADABLE = "adapter not answering"
@@ -68,7 +68,7 @@ STATE_NONE_PAIRED = "nothing paired"
 HEADLINE = {
     STATE_PERMITTED: "Paired devices",
     STATE_UNREADABLE: "Bluetooth did not answer",
-    STATE_NONE_PAIRED: "No Bluetooth devices are paired",
+    STATE_NONE_PAIRED: "No watch yet",
 }
 
 HEALTH = {
@@ -81,12 +81,11 @@ BODY = {
     # **No "Enable the switch in Settings".** The banner above names the
     # switch and turns it on from here.
     STATE_UNREADABLE: (
-        "The adapter did not answer, so whether anything is paired is "
-        "unknown - which is not the same as nothing being paired."),
+        "Bluetooth on this computer did not answer, so your watch cannot be "
+        "read. Check that Bluetooth is turned on, then press Reload."),
     STATE_NONE_PAIRED: (
-        "Pair a device from your desktop's own Bluetooth panel first. A device "
-        "has to already be known to this computer before this protocol can ask "
-        "it anything."),
+        "Pair your watch or fitness band once, and its steps, sleep and heart "
+        "rate show up here."),
 }
 
 #: state -> one clause for the status row, and **not** `BODY`. The row and the
@@ -185,6 +184,10 @@ GATT_KEY = "bluetooth-gatt-enabled"
 #: The watch itself is drawn by `watch_dashboard.WatchDashboard` (activity
 #: ring, sleep stages, stress line, measurement tiles); the nine buttons that
 #: printed sentences into one label are gone.
+
+
+def _add(group: Gtk.Widget, row: Gtk.Widget) -> None:
+    (group.add if hasattr(group, "add") else group.append)(row)
 
 
 def _in_thread(work: "Callable[[], Any]", done: "Callable[[Any], None]") -> None:
@@ -426,7 +429,6 @@ def _device_detail(mac: str, name: str) -> Gtk.Widget:
     inside `gatt.services` on the main thread.
     """
     column = common.page_body(8)
-    column.append(_row(name, mac))
     reading = _row("Reading", "asking the device what it offers…")
     column.append(reading)
 
@@ -607,16 +609,17 @@ def _append_moyoung(listing: Gtk.Widget, app: Any) -> None:
             return
         watches, problem = result
         if problem:
-            holder.append(_row("Watches", problem))
+            holder.append(_row("Your watch could not be listed", problem))
             return
-        holder.append(_row("Watches",
-                           f"{len(watches)} MoYoung (Da Fit) watch or watches"
-                           if watches else
-                           "No MoYoung (Da Fit) watch is paired. Anything "
-                           "else paired above is still read over GATT - the "
-                           "measurements, messages and settings below are one "
-                           "vendor's protocol, not the general one."))
         if not watches:
+            # Something is paired, but not a watch this page can read: say what
+            # it can read, plainly, and keep the way to pair one.
+            holder.append(common.empty_state(
+                ICON, "No supported watch found",
+                "Shani Link reads MoYoung watches and bands (the ones the Da Fit "
+                "app uses). Your other Bluetooth devices are listed below.",
+                child=common.connect_button(app, "bluetooth", "Pair a watch or band"),
+                inline=True))
             return
         holder.append(_companion_row(getattr(app, "switches", None), note))
         # **(mac, name) pairs.** This loop used to hand each whole pair to
@@ -637,7 +640,7 @@ def _append_moyoung(listing: Gtk.Widget, app: Any) -> None:
                  lambda n=name, l=card_note: _watch_call(n, {"action": "settings"}, l)),
             ])
             holder.append(dashboard)
-            text = Gtk.Entry(hexpand=True, placeholder_text="Message to show on the watch")
+            text = Gtk.Entry(hexpand=True, placeholder_text="A message to show on the watch")
             message = Gtk.Box(spacing=6)
             message.append(text)
             message.append(_button("Send to watch", lambda n=name, t=text, l=card_note: _watch_call(
@@ -676,10 +679,10 @@ def build(app) -> Gtk.Widget:
         `tests/test_surface_health_status.py`. So the row is drawn here rather
         than only on the happy path.
         """
+        # The empty state alone: a status row above it said the same thing a
+        # second time ("Could not determine - nothing is paired").
         column = common.page_body(18)
         column.set_margin_top(12)
-        column.append(recorder.row(state.health, state.headline,
-                                   HEALTH_SUMMARY.get(state.state, "")))
         column.append(common.empty_state(
             ICON, state.headline, state.body,
             child=(common.connect_button(app, "bluetooth", "Pair a watch or band")
@@ -703,32 +706,34 @@ def build(app) -> Gtk.Widget:
     # panel. A sibling panel passed the same test by finishing first, which is a
     # race rather than a property.
     recorder.set(common.STATUS_UNKNOWN)
-    interim = recorder.row(
-        common.STATUS_UNKNOWN, "Reading paired devices",
-        "asking the machine what is paired")
+    interim = common.loading("Looking for your watch...")
     column.append(interim)
 
     def deliver(widget: Gtk.Widget, health: str, headline: str,
                 summary: str) -> None:
+        # One answer on the page: the content itself. (A status row was drawn
+        # both above and below it once - "Could not determine", twice.)
+        if interim.get_parent() is column:
+            column.remove(interim)
         column.append(widget)
         recorder.set(health)
-        column.append(recorder.row(health, headline, summary))
-        column.remove(interim)
 
     def when_ready(devices: list) -> None:
-        listing = common.page_body(8)
-        listing.append(_row("Paired devices",
-                            f"{len(devices)} paired with this computer"))
+        listing = common.page_body(14)
+        # **The watch first**: its dashboard is what a person opened the page
+        # for. Every paired device's own Bluetooth answers (services, battery,
+        # firmware) follow, folded, for whoever wants them.
+        watches = common.page_body(8)
+        listing.append(watches)
+        _append_moyoung(watches, app)
+        others = common.group("Paired Bluetooth devices",
+                              "What each one says about itself: battery, firmware, sensors.")
         for mac, name in devices:
-            listing.append(_device_row(mac, name))
-            listing.append(_device_detail(mac, name))
-        # **The MoYoung half second**, because it is a different protocol and a
-        # device that supports both appears twice - once as a GATT device and
-        # once as a watch with measurements. Reading them in one order rather
-        # than the other would be arbitrary; this order is the general case
-        # first, so a strap that is not a MoYoung watch is not made to look like
-        # one by sitting under a heading that says "MoYoung".
-        _append_moyoung(listing, app)
+            expander = Adw.ExpanderRow(title=common.escape(name), subtitle=mac)
+            expander.add_css_class("watch-device")
+            expander.add_row(_device_detail(mac, name))
+            _add(others, expander)
+        listing.append(others)
         deliver(listing, common.STATUS_OK, "Paired devices",
                 f"{len(devices)} paired")
 

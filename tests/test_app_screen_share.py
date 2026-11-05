@@ -61,12 +61,24 @@ def _build():
     return page, getattr(page, "surface", None)
 
 
-def _pump():
+def _pump(seconds: float = 5.0):
+    """Run the loop until the worker thread is done and its answer has landed.
+
+    Stopping at the first moment nothing was pending raced the worker: under
+    load the thread had not yet queued its idle, and the test read the page
+    before the answer was on it (the flaky failures this file was known for)."""
+    import threading
+    import time
     context = GLib.MainContext.default()
-    for _ in range(200):
-        if not context.pending():
-            break
-        context.iteration(False)
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        while context.pending():
+            context.iteration(False)
+        if not any(t.name == "link-screen-share" and t.is_alive() for t in threading.enumerate()):
+            while context.pending():
+                context.iteration(False)
+            return
+        time.sleep(0.005)
 
 
 @pytest.fixture

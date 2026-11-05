@@ -31,9 +31,7 @@ from shani_link.app import common  # noqa: E402
 
 TITLE = "Screen share"
 ICON = "send-to-symbolic"
-SUBTITLE = ("This computer's screen, on a paired phone over Bluetooth. Ask "
-            "first to see whether this machine can - the check reads "
-            "GStreamer and the Bluetooth address, and takes a while.")
+SUBTITLE = "Show this computer's screen on your phone, over Bluetooth."
 
 
 #: The running stream, tracked by its process (never found again by name).
@@ -101,18 +99,18 @@ class _ShareSurface:
 
         self._group = common.group()
         self._body.append(self._group)
-        self._row = common.row("Can this machine share?",
-                               "", suffix=self._buttons())
+        self._row = common.row("Share this screen with your phone",
+                               "First turn on Bluetooth tethering on the phone and connect "
+                               "this computer to it. You choose what to share; nothing "
+                               "leaves the Bluetooth link.", suffix=self._buttons())
         self._group.add(self._row)
-        self._body.append(common.group(
-            "", "Sharing opens the desktop's own ScreenCast portal, so the "
-                "portal's chooser appears and you pick what to share. The "
-                "phone sees it over Bluetooth; nothing is sent elsewhere."))
         #: What the last action said, in full - a truncated one-line label is not
         #: a report somebody can act on.
         self._report = common.row("What happened last", "(nothing yet)")
         _report_group = common.group()
         _report_group.add(self._report)
+        _report_group.set_visible(False)          # until something has happened
+        self._report_group = _report_group
         self._body.append(_report_group)
         self._busy = False
 
@@ -120,7 +118,7 @@ class _ShareSurface:
         box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
 
         self._check = Gtk.Button(label="Check")
-        self._check.set_tooltip_text("Ask whether this machine can share (takes up to 90 s)")
+        self._check.set_tooltip_text("See whether this computer can share its screen now (can take a minute)")
         self._check.connect("clicked", lambda _b: self._run("status"))
 
         self._start = Gtk.Button(label="Start")
@@ -144,7 +142,7 @@ class _ShareSurface:
         self._busy = True
         for widget in (self._check, self._start, self._stop):
             widget.set_sensitive(False)
-        self._say(f"{action}… running it")
+        self._say({"status": "Checking…", "start": "Starting…", "stop": "Stopping…"}.get(action, f"{action}…"))
 
         def work():
             try:
@@ -170,6 +168,7 @@ class _ShareSurface:
         package.
         """
         self._report.set_subtitle(str(text))
+        self._report_group.set_visible(True)
 
 
 def build(app: Any) -> Gtk.Widget:

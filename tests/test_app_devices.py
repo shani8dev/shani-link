@@ -208,18 +208,15 @@ class TestTheRows:
         assert len(rows) == 3, [_row_title(r) for r in rows]
         assert [_row_title(r) for r in rows] == ["Pixel 8", "Galaxy Tab", "Old Nook"]
 
-    def test_each_row_says_its_kind_its_battery_and_when_it_was_read(self, monkeypatch):
+    def test_each_row_says_in_plain_words_whether_it_is_connected_and_its_battery(self, monkeypatch):
         _install(
             monkeypatch,
             _FakePhone(found=[_device("abc123", "Pixel 8")], battery=(72, True)),
         )
         row = _device_row_for(devices.build(_app()), "Pixel 8")
         text = _row_text(row)
-        assert "kind: paired, reachable right now" in text, text
-        assert "battery: 72% and charging" in text, text
-        assert "last known at " in text, text
-        stamps = _marked(row, devices.WHEN_CSS)
-        assert len(stamps) == 1 and stamps[0].get_text(), "the row carries no timestamp"
+        assert "Connected · Battery 72%, charging" in text, text
+        assert "kind:" not in text and "reachable" not in text, "developer words on a row: " + text
 
     def test_an_unreachable_device_is_never_given_a_battery_reading(self, monkeypatch):
         """`skills/phone.py` asks only of a reachable device, and for the same
@@ -230,8 +227,7 @@ class TestTheRows:
         _install(monkeypatch, phone)
         row = _device_row_for(devices.build(_app()), "Old Nook")
         text = _row_text(row)
-        assert "kind: paired, not reachable" in text, text
-        assert "not read, the device is not reachable" in text, text
+        assert "Not connected right now" in text, text
         assert "9%" not in text, text
         assert "battery" not in phone.calls, (
             f"an unreachable device's battery was read anyway: {phone.calls}"
@@ -246,7 +242,7 @@ class TestTheRows:
                  _FakePhone(found=[_device("abc123", "Pixel 8")], battery=None))
         row = _device_row_for(devices.build(_app()), "Pixel 8")
         text = _row_text(row)
-        assert "this backend does not report one" in text, text
+        assert "Battery" not in text and "backend" not in text, text
         assert "0%" not in text, text
 
     def test_an_unpaired_device_is_not_listed(self, monkeypatch):

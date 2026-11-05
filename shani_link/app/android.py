@@ -54,10 +54,8 @@ logger = logging.getLogger(__name__)
 
 TITLE = "Android"
 ICON = "drive-harddisk-usb-symbolic"
-SUBTITLE = ("A phone connected with USB debugging - what it is, how much "
-            "battery and storage it has, and a read-mostly way to move a file "
-            "either way. Neither desktop has a panel for a phone reached over "
-            "adb; the Bluetooth and Sound ones are elsewhere for a reason.")
+SUBTITLE = ("An Android phone plugged in with a USB cable: its battery and "
+            "storage, a screenshot, and a file or a link sent to it.")
 
 
 STATE_PERMITTED = "permitted"
@@ -66,8 +64,8 @@ STATE_NONE = "no phone connected"
 
 HEADLINE = {
     STATE_PERMITTED: "Connected phones",
-    STATE_NO_ADB: "adb is not installed",
-    STATE_NONE: "No phone is connected with USB debugging",
+    STATE_NO_ADB: "The Android tools are missing",
+    STATE_NONE: "No Android phone plugged in",
 }
 
 #: Three of the four are "could not determine". None of them is a fault in the
@@ -96,15 +94,12 @@ BODY = {
         # four profiles** and hard-depends on `android-tools`. So a machine
         # without it is not a normal Shanios install, which is why the sentence
         # says so rather than implying this is how the OS usually arrives.
-        "`adb` is the tool that speaks to a phone over USB debugging. Every "
-        "Shanios image has it - it comes in with the base tools - so this "
-        "machine is missing something it should have; the package that "
-        "provides it is android-tools, and without it there is no way to ask "
-        "whether a phone is connected."),
+        "This computer needs the Android tools (the android-tools package, "
+        "which every ShaniOS image includes) to talk to a phone over USB."),
     STATE_NONE: (
-        "No device has USB debugging turned on and has accepted this "
-        "computer's key. That is the phone owner's decision, and it is not "
-        "something this page can change from here."),
+        "Plug your phone in with a USB cable, turn on USB debugging in its "
+        "Developer options, and tap Allow when the phone asks. Connect an "
+        "Android phone shows each step."),
 }
 
 #: state -> one clause for the status row, and **not** `BODY`. The row and the
@@ -141,6 +136,8 @@ class State:
     def body(self) -> str:
         """The generic explanation, plus what *this* instance was refused for."""
         generic = BODY.get(self.state, "")
+        if self.state == STATE_NONE:
+            return generic           # adb's "no device" is the headline again
         # **A reason that names the switch is the banner's sentence.** The
         # banner above names it, says it is off and turns it on, so the
         # skill's own refusal - which says the same thing - would be a
@@ -296,7 +293,7 @@ def _device_row(serial: str, state: str, model: str = "") -> Gtk.Widget:
         subtitle = ("in bootloader mode - adb cannot reach this phone, and "
                     "fastboot is the tool that can; Shani Link does not drive it")
     else:
-        subtitle = state
+        subtitle = {"device": "ready"}.get(state, state)
     if model:
         subtitle = f"{model} - {subtitle}" if subtitle else model
     return _row(serial, subtitle)
@@ -326,10 +323,17 @@ class PhoneActions(Gtk.Box):
             buttons.append(button)
         self.append(buttons)
         link = Gtk.Box(spacing=6)
-        self.link_entry = Gtk.Entry(placeholder_text="https://...", hexpand=True)
+        typed = Gtk.Box(spacing=0, hexpand=True)
+        typed.add_css_class("linked")
+        self.link_entry = Gtk.Entry(placeholder_text="A link to open on the phone", hexpand=True)
         self.link_entry.connect("activate", lambda *_a: self.on_open_link())
+        # the link you copied, without typing it
+        paste = Gtk.Button(icon_name="edit-paste-symbolic", tooltip_text="Paste the link you copied")
+        paste.connect("clicked", lambda *_a: self.paste_link())
+        typed.append(self.link_entry)
+        typed.append(paste)
         self.link_button = self._button("Open on the phone", self.on_open_link)
-        link.append(self.link_entry)
+        link.append(typed)
         link.append(self.link_button)
         self.append(link)
         self.note = Gtk.Label(label="", xalign=0.0, wrap=True, selectable=True)
@@ -361,10 +365,25 @@ class PhoneActions(Gtk.Box):
     def on_apps(self) -> None:
         self._do("Listing the apps...", engine.apps)
 
+    def paste_link(self) -> None:
+        from gi.repository import Gdk
+        display = Gdk.Display.get_default()
+        if display is None:
+            return
+
+        def done(clip, result) -> None:
+            try:
+                text = clip.read_text_finish(result)
+            except GLib.Error:
+                return
+            if text:
+                self.link_entry.set_text(text.strip())
+        display.get_clipboard().read_text_async(None, done)
+
     def on_open_link(self) -> None:
         url = self.link_entry.get_text().strip()
         if not url:
-            self.say("Type a link first, starting http:// or https://.")
+            self.say("Paste or type a link first, starting http:// or https://.")
             return
         self._do(f"Opening {url} on the phone...", engine.open_url, url)
 
@@ -409,8 +428,7 @@ def build(app) -> Gtk.Widget:
         """An empty state, *with* the status row that matches its own word."""
         column = common.page_body(18)
         column.set_margin_top(12)
-        column.append(recorder.row(state.health, state.headline,
-                                   HEALTH_SUMMARY.get(state.state, "")))
+        recorder.set(state.health)        # the empty state says it; no row repeating it
         column.append(common.empty_state(
             ICON, state.headline, state.body,
             child=(common.connect_button(app, "android", "Connect an Android phone")
@@ -431,17 +449,17 @@ def build(app) -> Gtk.Widget:
     # panel. A sibling panel passed the same test by finishing first, which is a
     # race rather than a property.
     recorder.set(common.STATUS_UNKNOWN)
-    interim = recorder.row(
-        common.STATUS_UNKNOWN, "Reading connected phones",
-        "asking the machine what is connected")
+    interim = common.loading("Looking for a phone plugged in by USB...")
     column.append(interim)
 
     def deliver(widget: Gtk.Widget, health: str, headline: str,
                 summary: str) -> None:
+        # The page's content is its one answer: a status row above *and* below
+        # an empty state said "Could not determine" twice.
+        if interim.get_parent() is column:
+            column.remove(interim)
         column.append(widget)
         recorder.set(health)
-        column.append(recorder.row(health, headline, summary))
-        column.remove(interim)
 
     def when_ready(answer: Any) -> None:
         if isinstance(answer, Exception):
@@ -466,8 +484,8 @@ def build(app) -> Gtk.Widget:
                     common.STATUS_UNKNOWN, HEADLINE[state],
                     HEALTH_SUMMARY[state])
             return
-        listing.append(_row("Connected phones",
-                            f"{len(devices)} answering over USB debugging"))
+        listing.append(recorder.row(common.STATUS_OK, "Connected phones",
+                                    f"{len(devices)} answering over USB"))
         for serial, state, model in devices:
             listing.append(_device_row(serial, state, model))
             if state == "device":
