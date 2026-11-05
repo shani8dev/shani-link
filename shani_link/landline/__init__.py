@@ -431,10 +431,11 @@ def _notify(who: str, number: str) -> None:
     try:
         from gi.repository import Gio, GLib
         bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
-        hints = {"urgency": GLib.Variant("y", 2), "category": GLib.Variant("s", "call.incoming"),
-                 "x-shani-link": GLib.Variant("s", "landline")}
+        from shani_link.notify import APP_NAME, hints as _hints
+        hints = _hints("call.incoming", urgency=GLib.Variant("y", 2),
+                       **{"x-shani-link": GLib.Variant("s", "landline")})
         reply = bus.call_sync(*NOTIFY, "Notify", GLib.Variant("(susssasa{sv}i)", (
-            "Phone", 0, "call-start-symbolic", f"Landline: {who}",
+            APP_NAME, 0, "call-start-symbolic", f"Landline: {who}",
             number if number and number != who else "Incoming call",
             ["landline-answer", "Answer", "landline-decline", "Decline"], hints, 0)),
             GLib.VariantType.new("(u)"), Gio.DBusCallFlags.NONE, 3000, None)

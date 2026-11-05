@@ -91,6 +91,7 @@ def test_a_missed_call_names_the_caller_and_offers_call_back_and_message(server)
         assert title == "Missed call: Amma" and "Landline" in body and "+919800000001" in body
         assert actions == ["call-back", "Call back", "message", "Message"]
         assert hints["category"] == "call.unanswered" and icon == "call-missed-symbolic"
+        assert _app == "Shani Link" and hints["desktop-entry"] == "dev.shani.Link.App"
         _press(srv, 1, "call-back")
         assert _pump(lambda: dialled) and dialled == [("landline", "+919800000001")]
         nid = notifier.post({"line": "phone", "number": "+912", "when": 0})
@@ -118,3 +119,17 @@ def test_a_withheld_number_has_no_buttons_that_cannot_work(server):
     notifier.post({"line": "modem", "number": "", "when": 0})
     assert _pump(lambda: notes)
     assert notes[0][3] == "Missed call: Unknown caller" and notes[0][5] == []
+
+
+def test_every_notification_is_shani_links_own():
+    """No notification borrows Chronoa's name or desktop id (it drew Chronoa's
+    face beside a text): the notifiers all go through shani_link.notify."""
+    import pathlib
+    from shani_link import notify
+    root = pathlib.Path(__file__).resolve().parent.parent / "shani_link"
+    for path in root.rglob("*.py"):
+        text = path.read_text()
+        assert '"dev.shani.chronoa"' not in text, path
+        assert "Shani Chronoa\", 0" not in text and "--app-name=Shani Chronoa" not in text, path
+    assert notify.send_argv("t", "b")[:3] == ["notify-send", "--app-name=Shani Link",
+                                              "--hint=string:desktop-entry:dev.shani.Link.App"]

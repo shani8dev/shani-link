@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 NOTIFY = ("org.freedesktop.Notifications", "/org/freedesktop/Notifications",
           "org.freedesktop.Notifications")
-APP_ENTRY = "dev.shani.Link.App"
+from shani_link.notify import APP_ENTRY  # noqa: E402
 
 
 def text_for(row: dict) -> "tuple[str, str]":

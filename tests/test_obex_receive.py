@@ -135,8 +135,10 @@ def test_accept_stages_in_obexds_folder_then_delivers_without_overwriting(bus_ad
     final = rx.ObexReceiver.deliver(str(staged))
     assert final == str(tmp_path / "dl" / "photo (2).jpg") and not staged.exists()
     assert (tmp_path / "dl" / "photo.jpg").read_text() == "already here"
-    title, body = [p for m, p in obexd.log if m == "Notify"][0][3:5]
+    note = [p for m, p in obexd.log if m == "Notify"][0]
+    title, body = note[3:5]
     assert title == "Receive a file?" and "photo.jpg" in body
+    assert note[0] == "Shani Link" and note[6]["desktop-entry"] == "dev.shani.Link.App"
 
 
 def test_decline_refuses_the_file(bus_address, tmp_path, monkeypatch):

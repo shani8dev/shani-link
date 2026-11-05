@@ -292,14 +292,14 @@ class ObexReceiver:
 
     def _notify(self, title: str, body: str, actions: list) -> int:
         from gi.repository import GLib
-        hints = {"urgency": GLib.Variant("y", 2 if actions else 1), "category": GLib.Variant("s", "transfer"),
-                 "desktop-entry": GLib.Variant("s", "dev.shani.chronoa")}
+        from shani_link.notify import APP_NAME, hints as _hints
+        hints = _hints("transfer", urgency=GLib.Variant("y", 2 if actions else 1))
         if actions:
             hints["resident"] = GLib.Variant("b", True)
         try:
             return int(self.bus.call_sync(
                 NOTIFY, NOTIFY_PATH, NOTIFY, "Notify",
-                GLib.Variant("(susssasa{sv}i)", ("Shani Chronoa", 0, "document-send-symbolic", title, body,
+                GLib.Variant("(susssasa{sv}i)", (APP_NAME, 0, "document-send-symbolic", title, body,
                                                   actions, hints, 0 if actions else 8000)),
                 GLib.VariantType.new("(u)"), 0, 5000, None).unpack()[0])
         except Exception:  # noqa: BLE001

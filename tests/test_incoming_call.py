@@ -117,6 +117,8 @@ def test_a_ringing_call_posts_answer_and_decline(phone_and_watcher):
     assert "+919800000001" in title and title.startswith("Incoming call")
     assert actions == ["answer", "Answer", "decline", "Decline"]
     assert hints["category"] == "call.incoming" and hints["urgency"] == 2
+    # Shani Link's own name and face, not Chronoa's (the desktop draws the icon from it)
+    assert _app == "Shani Link" and hints["desktop-entry"] == "dev.shani.Link.App"
 
 
 def test_pressing_answer_answers_that_call_and_closes_the_notification(phone_and_watcher):

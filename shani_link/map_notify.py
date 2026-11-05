@@ -70,10 +70,10 @@ class MessageWatcher:
 
     def notify_replyable(self, bus, title: str, body: str, phone: str, number: str) -> int:
         from gi.repository import GLib
-        hints = {"x-kde-reply-placeholder-text": GLib.Variant("s", "Reply…"),
-                 "category": GLib.Variant("s", "im.received")}
+        from shani_link.notify import APP_NAME, hints as _hints
+        hints = _hints("im.received", **{"x-kde-reply-placeholder-text": GLib.Variant("s", "Reply…")})
         nid = bus.call_sync(NOTIFY, NOTIFY_PATH, NOTIFY, "Notify",
-                            GLib.Variant("(susssasa{sv}i)", ("Shani Chronoa", 0, "mail-message-new-symbolic",
+                            GLib.Variant("(susssasa{sv}i)", (APP_NAME, 0, "mail-message-new-symbolic",
                                                              title, body, ["inline-reply", "Reply"], hints, -1)),
                             None, 0, 5000, None).unpack()[0]
         self.replies[nid] = (phone, number)
@@ -216,7 +216,8 @@ class MessageWatcher:
 def _desktop_notify(title: str, body: str) -> None:
     import subprocess
     try:
-        subprocess.run(["notify-send", "--app-name=Shani Chronoa", "--icon=mail-message-new-symbolic",
-                        title, body], capture_output=True, timeout=5, check=False)
+        from shani_link.notify import send_argv
+        subprocess.run(send_argv(title, body, "mail-message-new-symbolic"),
+                       capture_output=True, timeout=5, check=False)
     except OSError:
         pass

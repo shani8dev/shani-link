@@ -268,13 +268,12 @@ class IncomingCallWatcher:
 
     def _notify(self, title: str, body: str) -> int:
         from gi.repository import GLib
-        hints = {"urgency": GLib.Variant("y", 2), "category": GLib.Variant("s", "call.incoming"),
-                 "resident": GLib.Variant("b", True),
-                 "desktop-entry": GLib.Variant("s", "dev.shani.chronoa")}
+        from shani_link.notify import APP_NAME, hints as _hints
+        hints = _hints("call.incoming", urgency=GLib.Variant("y", 2), resident=GLib.Variant("b", True))
         try:
             reply = self._bus.call_sync(
                 NOTIFY_BUS, NOTIFY_PATH, NOTIFY_BUS, "Notify",
-                GLib.Variant("(susssasa{sv}i)", ("Shani Chronoa", 0, "call-start-symbolic", title, body,
+                GLib.Variant("(susssasa{sv}i)", (APP_NAME, 0, "call-start-symbolic", title, body,
                                                   ["answer", "Answer", "decline", "Decline"], hints, 0)),
                 GLib.VariantType.new("(u)"), 0, 5000, None)
             return int(reply.unpack()[0])

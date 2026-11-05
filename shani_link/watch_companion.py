@@ -538,7 +538,8 @@ class WatchCompanion:
 
     def _notify(self, title: str, body: str) -> None:
         try:
-            subprocess.run(["notify-send", "--app-name=Shani Chronoa", title, body],
+            from shani_link.notify import send_argv
+            subprocess.run(send_argv(title, body),
                            capture_output=True, timeout=5, check=False)
         except OSError:
             pass
