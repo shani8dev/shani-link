@@ -21,12 +21,43 @@ Adw.init()
 
 
 def _press(page, label, **fields):
-    button, entries = page.buttons[label]
+    button, inputs = page.buttons[label]
     for key, value in fields.items():
-        entries[key].set_text(value)
+        inputs[key].set_value(value)
+    pump(lambda: button.get_sensitive(), 5)
     button.emit("clicked")
     pump(lambda: button.get_sensitive() and not page.output.get_text().endswith("..."), 5)
     return page.output.get_text()
+
+
+def _details(page):
+    """The engine's own words, folded under Details."""
+    out = []
+
+    def walk(w):
+        if hasattr(w, "details_text"):
+            out.append(w.details_text)
+        child = w.get_first_child()
+        while child is not None:
+            walk(child)
+            child = child.get_next_sibling()
+    walk(page)
+    return "\n".join(out)
+
+
+def _typed_entries(page):
+    """Entries a person would have to type into, shown without asking."""
+    out = []
+
+    def walk(w):
+        if isinstance(w, Gtk.Entry) and w.get_visible() and not isinstance(w.get_parent(), Gtk.SpinButton):
+            out.append(w)
+        child = w.get_first_child()
+        while child is not None:
+            walk(child)
+            child = child.get_next_sibling()
+    walk(page)
+    return out
 
 
 def test_radio_reports_the_hardware_and_tunes_through_the_engine(monkeypatch):
@@ -36,11 +67,15 @@ def test_radio_reports_the_hardware_and_tunes_through_the_engine(monkeypatch):
     asked = []
     monkeypatch.setattr(fm_radio, "run", lambda arguments: asked.append(arguments) or "Would tune 98.3 MHz")
     page = tools_pages.build_radio()
-    pump(lambda: any("no /dev/dvb: no tuner" in t for t in texts(page)), 5)
-    assert any("no /dev/dvb: no tuner" in t for t in texts(page)), texts(page)
+    pump(lambda: "no /dev/dvb: no tuner" in _details(page), 5)
+    # plain words in front, the engine's own folded under Details
+    assert any("No radio stick plugged in" in t for t in texts(page)), texts(page)
+    assert "no /dev/dvb: no tuner" in _details(page)
+    assert not any("/dev/dvb" in t for t in texts(page)), "device nodes are not in front of a person"
     assert page.status() == "attention", "no dongle is not ready"
-    assert _press(page, "Tune", frequency="98.3") == "Would tune 98.3 MHz"
-    assert asked == [{"action": "tune", "frequency": "98.3"}]
+    tune = page.buttons["Tune"][0]
+    assert not tune.get_sensitive(), "Tune needs the stick: greyed out, not a button that refuses"
+    assert page.buttons["Bands"][0].get_sensitive(), "what works without the stick stays live"
     _press(page, "Bands")
     assert asked[-1] == {"action": "bands"}, "an empty field is not passed as an empty value"
 
@@ -49,22 +84,61 @@ def test_radio_is_ready_only_with_a_dongle_and_the_tools(monkeypatch):
     from shani_link import fm_radio
     from shani_link.app import tools_pages
     monkeypatch.setattr(fm_radio, "hardware", lambda: "rtl_fm is installed (/x)\nan RTL2832U dongle is attached:")
+    asked = []
+    monkeypatch.setattr(fm_radio, "run", lambda arguments: asked.append(arguments) or "Would tune 98.3 MHz")
     page = tools_pages.build_radio()
     pump(lambda: page.status() == "ok", 5)
     assert page.status() == "ok"
+    # a frequency is picked, not typed; "Other..." is the typed path
+    assert _press(page, "Tune", frequency="98.3") == "Would tune 98.3 MHz"
+    assert asked == [{"action": "tune", "frequency": "98.3"}]
+    _press(page, "Tune", frequency="88.8")
+    assert asked[-1] == {"action": "tune", "frequency": "88.8"}
+
+
+def test_no_page_asks_for_a_typed_value_up_front(monkeypatch):
+    """A person picks: presets, a file chooser, spin buttons. The only entry
+    shown is the link to write to a sticker, which nothing could offer."""
+    from shani_link import fm_radio, ir_remote, nfc
+    from shani_link.app import tools_pages
+    monkeypatch.setattr(fm_radio, "hardware", lambda: "nothing")
+    monkeypatch.setattr(nfc, "readers", lambda: ([], "none"))
+    monkeypatch.setattr(ir_remote, "device_report", lambda: ([], "none"))
+    assert _typed_entries(tools_pages.build_radio()) == []
+    assert _typed_entries(tools_pages.build_remote()) == []
+    nfc_page = tools_pages.build_nfc()
+    assert [e.get_placeholder_text() for e in _typed_entries(nfc_page)] == ["Link to write"]
+
+
+def test_radio_plays_a_chosen_recording(monkeypatch, tmp_path):
+    from shani_link import fm_radio
+    from shani_link.app import tools_pages
+    monkeypatch.setattr(fm_radio, "hardware", lambda: "nothing attached")
+    asked = []
+    monkeypatch.setattr(fm_radio, "run", lambda arguments: asked.append(arguments) or "Wrote x.wav")
+    page = tools_pages.build_radio()
+    recording = str(tmp_path / "fm.iq.wav")
+    assert _press(page, "Play a recording", file=recording) == "Wrote x.wav"
+    assert asked == [{"action": "decode", "file": recording}]
+    assert page.buttons["Play a recording"][1]["file"].button.get_label() == "fm.iq.wav"
 
 
 def test_nfc_says_why_there_is_no_reader_and_reads_through_the_engine(monkeypatch):
     from shani_link import nfc
     from shani_link.app import tools_pages
-    monkeypatch.setattr(nfc, "readers", lambda: ([], "Cannot use an NFC reader: `nfc-scan-device` is not installed"))
+    found = {"readers": ([], "Cannot use an NFC reader: `nfc-scan-device` is not installed")}
+    monkeypatch.setattr(nfc, "readers", lambda: found["readers"])
     asked = []
     monkeypatch.setattr(nfc, "_run", lambda arguments: asked.append(arguments) or "No tag was read: nothing was tapped")
     page = tools_pages.build_nfc()
-    pump(lambda: any("not installed" in t for t in texts(page)), 5)
-    assert any("nfc-scan-device" in t for t in texts(page))
-    assert "nothing was tapped" in _press(page, "Read", seconds="3")
-    assert asked == [{"action": "read", "seconds": "3"}]
+    pump(lambda: "not installed" in _details(page), 5)
+    assert "nfc-scan-device" in _details(page)
+    assert any("No NFC reader plugged in" in t for t in texts(page))
+    found["readers"] = (["ACR122U"], "")
+    page = tools_pages.build_nfc()
+    pump(lambda: page.status() == "ok", 5)
+    assert "nothing was tapped" in _press(page, "Read", seconds="15")
+    assert asked == [{"action": "read", "seconds": "15"}]
 
 
 def test_remote_sends_a_code_through_the_engine(monkeypatch):
@@ -76,19 +150,20 @@ def test_remote_sends_a_code_through_the_engine(monkeypatch):
     page = tools_pages.build_remote()
     pump(lambda: page.status() == "ok", 5)
     assert any("/dev/lirc0" in t for t in texts(page))
-    assert _press(page, "Send", protocol="nec", address="0x04", command="0x08") == "Sent."
-    assert asked == [{"action": "send", "protocol": "nec", "address": "0x04", "command": "0x08"}]
+    assert _press(page, "Send", protocol="nec", address="4", command="8") == "Sent."
+    assert asked == [{"action": "send", "protocol": "nec", "address": "4", "command": "8"}]
 
 
 def test_an_engine_that_raises_is_a_sentence(monkeypatch):
     from shani_link import ir_remote
     from shani_link.app import tools_pages
-    monkeypatch.setattr(ir_remote, "device_report", lambda: ([], "no infrared device"))
+    monkeypatch.setattr(ir_remote, "device_report", lambda: (["/dev/lirc0"], ""))
 
     def boom(arguments):
         raise OSError("ir-ctl vanished")
     monkeypatch.setattr(ir_remote, "_run", boom)
     page = tools_pages.build_remote()
+    pump(lambda: page.status() == "ok", 5)
     assert "ir-ctl vanished" in _press(page, "Receive")
     assert page.buttons["Receive"][0].get_sensitive()
 

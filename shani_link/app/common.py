@@ -200,7 +200,9 @@ STATUS_OFF = "off"
 STATUS_WORDS = {
     STATUS_OK: "Ready",
     STATUS_ATTENTION: "Needs attention",
-    STATUS_UNKNOWN: "Could not determine",
+    # Plain words: "Could not determine" read as an error to people who only
+    # wanted to know whether their phone was there.
+    STATUS_UNKNOWN: "Not known yet",
     STATUS_OFF: "Turned off",
 }
 
@@ -476,6 +478,33 @@ def banner(text: str, button_label: str = "",
         button.update_property([Gtk.AccessibleProperty.LABEL], [tip])
         box.append(button)
     return box
+
+
+def loading(text: str) -> Gtk.Widget:
+    """A spinner and what is being waited for - in place of a status row that
+    says "not known yet" while a read is still running."""
+    box = Gtk.Box(spacing=10, margin_top=6, margin_bottom=6, margin_start=12, margin_end=12)
+    spinner = Gtk.Spinner(spinning=True)
+    box.append(spinner)
+    label = Gtk.Label(label=text, xalign=0.0)
+    label.add_css_class("dim-label")
+    box.append(label)
+    box.loading_text = text
+    return box
+
+
+def details(title: str, text: str) -> Gtk.Widget:
+    """The technical words a page has, folded away under `title` - there for
+    whoever asks for them, not in front of everyone else."""
+    expander = Gtk.Expander(label=title, margin_start=12, margin_end=12)
+    label = Gtk.Label(label=home_paths(text), xalign=0.0, wrap=True, selectable=True)
+    label.set_max_width_chars(80)
+    label.add_css_class("dim-label")
+    label.add_css_class("caption")
+    label.set_margin_top(6)
+    expander.set_child(label)
+    expander.details_text = text
+    return expander
 
 
 def scrolled(child: Gtk.Widget, max_content_height: int = 0) -> Gtk.Widget:
