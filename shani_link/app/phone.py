@@ -64,6 +64,20 @@ def _in_thread(work: Callable[[], Any], done: Callable[[Any], None]) -> None:
     threading.Thread(target=run, daemon=True).start()
 
 
+def _tether_target(dev: Any, which: Any) -> "Optional[tuple[str, str]]":
+    """(Bluetooth address, name) of the phone whose internet this computer can
+    use, or None. A phone reached over Bluetooth is its own address; one reached
+    through GSConnect or KDE Connect is used when it is also paired over BlueZ."""
+    if dev is None:
+        return None
+    if str(which) == "bluetooth":
+        return str(dev.id), str(dev.name)
+    from shani_link import phone_bluez
+    paired = phone_bluez.phones()
+    hit = next((p for p in paired if p[1] == dev.name), paired[0] if paired else None)
+    return (hit[0], hit[1]) if hit else None
+
+
 def _call_tool(arguments: dict) -> str:
     """Bluetooth call control: shani-link's engine, asked directly."""
     from shani_link import bt_telephony
@@ -355,7 +369,16 @@ stackswitcher button {
             phones = [d for d in ph.devices() if d.paired]
             dev = next((d for d in phones if d.reachable), phones[0] if phones else None)
             battery = ph.battery(dev) if dev is not None and dev.reachable else None
-            return dev, battery, ph.backend()
+            which = ph.backend()
+            target = _tether_target(dev, which)
+            internet = None
+            if target is not None:
+                from shani_link import tether
+                try:
+                    internet = tether.state(*target) if tether.available() else None
+                except tether.TetherError:
+                    internet = None
+            return dev, battery, which, (target, internet)
 
         def done(result):
             if isinstance(result, ph.PhoneUnavailable):
@@ -369,7 +392,7 @@ stackswitcher button {
                 self.set_status(common.STATUS_ATTENTION, "Could not reach your phone", str(result))
                 self._phone_changed()
                 return
-            dev, battery, which = result
+            dev, battery, which, (target, internet) = result
             self.device = dev
             self._phone_bluetooth = str(which) == "bluetooth"
             if dev is None:
@@ -385,11 +408,62 @@ stackswitcher button {
                 self.set_status(common.STATUS_ATTENTION, f"{dev.name} is not connected",
                                 "Turn on Bluetooth on the phone and keep it near this computer, "
                                 "then press Reload.")
+            if internet is not None:
+                self.status_box.append(self._internet_row(target, internet))
             self._phone_changed()
             self.load_contacts()
             self.load_history()
             self.load_conversations()
         _in_thread(work, done)
+
+    #: The tethering row's words (`shani_link.tether`).
+    INTERNET = "Use the phone's internet"
+
+    def _internet_row(self, target: "tuple[str, str]", internet: dict) -> Gtk.Widget:
+        """One switch: browse on this computer with the phone's mobile data,
+        over Bluetooth. Flipping it is the whole act; a failure says what to
+        turn on on the phone."""
+        address, name = target
+        holder = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE, margin_top=6)
+        holder.add_css_class("boxed-list")
+        row = Adw.ActionRow(title=self.INTERNET)
+        row.add_prefix(Gtk.Image(icon_name="network-cellular-symbolic"))
+        switch = Gtk.Switch(active=bool(internet.get("on")), valign=Gtk.Align.CENTER)
+        row.add_suffix(switch)
+        row.set_activatable_widget(switch)
+        idle = (f"Connected through {name}" if internet.get("on") else
+                f"Browse on this computer with {name}'s mobile data, over Bluetooth")
+        row.set_subtitle(GLib.markup_escape_text(idle))
+        holder.append(row)
+        self.internet_row, self.internet_switch = row, switch
+        quiet = {"on": False}
+
+        def flipped(*_a) -> None:
+            if quiet["on"]:
+                return
+            on = switch.get_active()
+            switch.set_sensitive(False)
+            row.set_subtitle("Connecting..." if on else "Stopping...")
+
+            def work():
+                from shani_link import tether
+                return tether.tether(address, on, name)
+
+            def done(result):
+                switch.set_sensitive(True)
+                if isinstance(result, Exception):
+                    quiet["on"] = True
+                    switch.set_active(not on)
+                    quiet["on"] = False
+                    row.set_subtitle(GLib.markup_escape_text(str(result)))
+                    self.toast(GLib.markup_escape_text(str(result).split(" - ")[0]))
+                    return
+                row.set_subtitle(GLib.markup_escape_text(
+                    str(result) if on else f"Browse on this computer with {name}'s mobile data, "
+                                           "over Bluetooth"))
+            _in_thread(work, done)
+        switch.connect("notify::active", flipped)
+        return holder
 
     def _phone_up(self) -> bool:
         return self.device is not None and bool(getattr(self.device, "reachable", False))

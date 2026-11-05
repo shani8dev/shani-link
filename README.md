@@ -155,8 +155,9 @@ niri with shani-shell, GNOME, Plasma - gets the same line.
 | `/dev/shani/Link/Landline` | `dev.shani.Link.Landline` | The JioFiber landline through the router, like JioJoin: set up once with the texted code, then calls, keypad, mute, hold, swap, merge, history; `Event(kind, info_json)` for everything that happens on the line |
 | `/dev/shani/Link/Contacts` | `dev.shani.Link.Contacts` | The address book (yours, then the phone's): search it, and name a number |
 | `/dev/shani/Link/Calls` | `dev.shani.Link.Calls` | Every line at once (landline, phone, the computer's modem): the shared call history, and dial / answer / hang up / keypad on any line |
+| `/dev/shani/Link/Phone` | `dev.shani.Link.Phone` | The phone's internet over Bluetooth (tethering, through NetworkManager) |
 
-#### Contacts and Calls, for the shell and Chronoa
+#### Contacts, Calls and Phone, for the shell and Chronoa
 Records travel as JSON strings, as `Landline.Calls` already did. Errors are
 `dev.shani.Link.Error` with a sentence to show.
 
@@ -181,6 +182,15 @@ dev.shani.Link.Calls  (/dev/shani/Link/Calls)
   DeleteCall(s id) -> b
   ClearCalls()
   signal CallLogged(s row_json)   each call as it is logged, on any line
+
+dev.shani.Link.Phone  (/dev/shani/Link/Phone)
+  Tether(s address, b on) -> s    use the phone's internet over Bluetooth, or stop: finds or adds
+                                  NetworkManager's `bluetooth`/`panu` connection for the phone
+                                  ("<phone> internet") and brings it up or down. Returns what
+                                  happened ("Connected through Pixel 8"); an error says to turn on
+                                  Bluetooth tethering on the phone first. address "" is the phone
+                                  paired over Bluetooth
+  TetherState(s address) -> s     {address, phone, on, connection}
 ```
 A missed call on any line is also a notification with **Call back** (on the
 line it came in on) and **Message**.

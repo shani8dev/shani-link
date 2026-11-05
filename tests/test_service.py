@@ -66,7 +66,8 @@ def test_a_live_call_crosses_the_bus_as_its_fields_not_a_repr():
 
 def _gdbus(path, method, *args):
     iface = {"/dev/shani/Link/Contacts": "dev.shani.Link.Contacts",
-             "/dev/shani/Link/Calls": "dev.shani.Link.Calls"}[path]
+             "/dev/shani/Link/Calls": "dev.shani.Link.Calls",
+             "/dev/shani/Link/Phone": "dev.shani.Link.Phone"}[path]
     return f"gdbus call --session -d dev.shani.Link -o {path} -m {iface}.{method} " + " ".join(args) + "\n"
 
 
@@ -103,3 +104,27 @@ def test_recent_calls_cross_the_bus_and_can_be_deleted_and_cleared(tmp_path, mon
     assert "('[]',)" in out, "no line here, and the cleared history, are both []: " + out
     assert "dev.shani.Link.Error" in out and "not connected" in out, out
     assert calls_log.rows() == []
+
+
+def test_the_phones_internet_is_switched_over_the_bus(tmp_path, monkeypatch):
+    """The shell and Chronoa turn Bluetooth tethering on and off as the app does,
+    against tests/fake_nmcli.py first on PATH."""
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    (bindir / "nmcli").symlink_to(os.path.join(ROOT, "tests", "fake_nmcli.py"))
+    state = tmp_path / "nmcli.json"
+    state.write_text(json.dumps({"connections": []}))
+    monkeypatch.setenv("PATH", f"{bindir}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setenv("FAKE_NMCLI_STATE", str(state))
+    phone = "/dev/shani/Link/Phone"
+    out = on_bus(_gdbus(phone, "TetherState", "AA:00:00:00:00:01")
+                 + _gdbus(phone, "Tether", "AA:00:00:00:00:01", "true")
+                 + _gdbus(phone, "TetherState", "AA:00:00:00:00:01")
+                 + _gdbus(phone, "Tether", "AA:00:00:00:00:01", "false")
+                 + _gdbus(phone, "Tether", "''", "true"), tmp_path)
+    assert '"on": false' in out and '"on": true' in out, out
+    assert "Connected through the phone" in out and "Stopped using" in out, out
+    assert "No phone is paired over Bluetooth" in out, out
+    calls = json.loads(state.read_text())["calls"]
+    assert ["connection", "add", "type", "bluetooth", "bt-type", "panu", "bluetooth.bdaddr",
+            "AA:00:00:00:00:01", "con-name", "Phone internet"] in calls, calls

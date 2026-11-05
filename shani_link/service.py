@@ -13,6 +13,8 @@ card, Chronoa's skills): /dev/shani/Link/Contacts (dev.shani.Link.Contacts:
 search the address book, name a number) and /dev/shani/Link/Calls
 (dev.shani.Link.Calls: the lines, the shared call history, dial / answer /
 hang up on any line). JSON strings carry the records, as `Calls` already did.
+/dev/shani/Link/Phone (dev.shani.Link.Phone) switches using the phone's
+internet over Bluetooth (`tether`).
 
 Video goes over a local socket instead of D-Bus (frames are big and many):
 `VideoSocket()` names it; each frame is a 12-byte header (width, height,
@@ -88,6 +90,18 @@ CONTACTS_PATH = "/dev/shani/Link/Contacts"
 CONTACTS_IFACE = "dev.shani.Link.Contacts"
 CALLS_PATH = "/dev/shani/Link/Calls"
 CALLS_IFACE = "dev.shani.Link.Calls"
+
+PHONE_PATH = "/dev/shani/Link/Phone"
+PHONE_IFACE = "dev.shani.Link.Phone"
+
+PHONE_XML = f"""
+<node>
+  <interface name="{PHONE_IFACE}">
+    <method name="Tether"><arg name="address" type="s"/><arg name="on" type="b"/><arg type="s" direction="out"/></method>
+    <method name="TetherState"><arg name="address" type="s"/><arg type="s" direction="out"/></method>
+  </interface>
+</node>
+"""
 
 CONTACTS_XML = f"""
 <node>
@@ -180,7 +194,8 @@ class Service:
         node = Gio.DBusNodeInfo.new_for_xml(XML)
         conn.register_object(PATH, node.interfaces[0], self._call, None, None)
         for xml, path, handler in ((CONTACTS_XML, CONTACTS_PATH, self._contacts_call),
-                                   (CALLS_XML, CALLS_PATH, self._calls_call)):
+                                   (CALLS_XML, CALLS_PATH, self._calls_call),
+                                   (PHONE_XML, PHONE_PATH, self._phone_call)):
             conn.register_object(path, Gio.DBusNodeInfo.new_for_xml(xml).interfaces[0],
                                  handler, None, None)
         # Every logged call goes out as CallLogged, so an open history refreshes;
@@ -242,6 +257,31 @@ class Service:
             if method == "ClearCalls":
                 calls_log.clear()
                 return None
+            raise ValueError(f"no method {method}")
+        self._answer(invocation, run)
+
+    def _phone_call(self, _conn, _sender, _path, _iface, method, params, invocation) -> None:
+        """The phone's internet over Bluetooth (`tether`). An empty address is
+        the phone paired over Bluetooth; its name comes from BlueZ."""
+        from shani_link import phone_bluez, tether
+        a = params.unpack()
+
+        def phone(address: str) -> "tuple[str, str]":
+            paired = phone_bluez.phones()
+            if not address:
+                hit = next((p for p in paired if p[2]), paired[0] if paired else None)
+                if hit is None:
+                    raise ValueError("No phone is paired over Bluetooth")
+                return hit[0], hit[1]
+            return address, next((n for ad, n, _c in paired if ad.upper() == address.upper()), "")
+
+        def run():
+            if method == "Tether":
+                address, name = phone(a[0])
+                return GLib.Variant("(s)", (tether.tether(address, bool(a[1]), name),))
+            if method == "TetherState":
+                address, name = phone(a[0])
+                return GLib.Variant("(s)", (_json(tether.state(address, name)),))
             raise ValueError(f"no method {method}")
         self._answer(invocation, run)
 
