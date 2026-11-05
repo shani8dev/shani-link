@@ -1,8 +1,9 @@
 """The Phone page: your landline and your phone, from this computer.
 
 Calls (a dialer shaped like a car's, answer, hang up, hold, swap, merge, the
-call's picture, recent calls), messages (conversations, a thread, reply),
-contacts (search, call, text), the phone's music, files both ways, and the
+call's picture, the line to call on, and one history for every line -
+`calls_view`), messages (conversations, a thread, reply), contacts (your own
+address book and the phone's - `contacts_view`), the phone's music, files both ways, and the
 remote (this computer as the phone's Bluetooth keyboard: its camera shutter,
 media and volume keys, through `shani_link.phone_remote`). It adds
 no transport: the landline is the service's (`line.py`, over D-Bus), the phone
@@ -34,8 +35,9 @@ gi.require_version("Pango", "1.0")
 gi.require_version("Adw", "1")
 from gi.repository import Adw, Gdk, GLib, Gtk, Pango  # noqa: E402
 
+from shani_link import contacts as ct  # noqa: E402
 from shani_link import phone as ph  # noqa: E402
-from shani_link.app import common  # noqa: E402
+from shani_link.app import calls_view, common  # noqa: E402
 from shani_link.app.common import plural  # noqa: E402
 
 logger = logging.getLogger(__name__)
@@ -185,7 +187,51 @@ class PhonePanel:
     # --- shared bits ---------------------------------------------------------
 
     def name_for(self, number: str) -> str:
-        return ph.name_for(number, self.book) if self.book else ""
+        """The one lookup: your own contacts, then the phone's (`contacts.lookup`)."""
+        return ct.name_for(number, self.book or None)
+
+    def toast(self, title: str, button: str = "", on_button: Optional[Callable[[], None]] = None) -> None:
+        """A short message at the bottom of the page, with Undo when there is one."""
+        overlay = getattr(self, "toasts", None)
+        toast = Adw.Toast(title=title, timeout=8 if button else 4)
+        if button and on_button is not None:
+            toast.set_button_label(button)
+            toast.connect("button-clicked", lambda *_: on_button())
+        self.last_toast = toast
+        if overlay is not None:
+            overlay.add_toast(toast)
+
+    # --- moving between the tabs --------------------------------------------------
+
+    def show_tab(self, name: str) -> None:
+        stack = getattr(self, "stack", None)
+        if stack is not None:
+            stack.set_visible_child_name(name)
+
+    def message(self, number: str) -> None:
+        """The Messages tab, addressed to `number`; nothing is sent until Send."""
+        self.show_tab("messages")
+        self.to.set_text(number)
+        self.text.grab_focus()
+
+    def add_contact(self, number: str) -> None:
+        """A new contact with `number` in it, in the editor."""
+        self.show_tab("contacts")
+        self.contacts_view.edit(None, number)
+
+    def add_to_existing(self, number: str) -> None:
+        """Choose a contact you already have to add `number` to."""
+        self.show_tab("contacts")
+        self.contacts_view.pick_for_number(number)
+
+    def prefill(self, number: str, note: str = "") -> None:
+        """The dial pad with `number` on it (a tel: link, a missed call). Never
+        dialled from here: the person presses Call."""
+        self.show_tab("calls")
+        self.number.set_text(number)
+        self.number.grab_focus()
+        if note:
+            self.call_note.set_text(note)
 
     def notice(self, box: Gtk.Box, text: str) -> None:
         _clear(box)
@@ -249,6 +295,7 @@ stackswitcher button {
         self.set_status(common.STATUS_UNKNOWN, "Looking for your phone...")
 
         stack = Gtk.Stack(transition_type=Gtk.StackTransitionType.CROSSFADE, vexpand=True)
+        self.stack = stack
         switcher = Gtk.StackSwitcher(stack=stack, halign=Gtk.Align.CENTER)
         body.append(switcher)
         body.append(stack)
@@ -259,9 +306,25 @@ stackswitcher button {
                                      ("files", "Files", self.files_tab),
                                      ("remote", "Remote", self.remote_tab)):
             stack.add_titled(builder(), name, title)
-        set_content(common.scrolled(body))
+        self.toasts = Adw.ToastOverlay(child=common.scrolled(body))
+        set_content(self.toasts)
+        self._follow_call_log()
         self.find_phone()
+        page.panel = self           # `shani-link-app --dial` / `--message` reach the tabs
         return page
+
+    def _follow_call_log(self) -> None:
+        """Refresh the history when the service logs a call on any line (its
+        CallLogged signal): only a subscription, nothing polls."""
+        try:
+            from gi.repository import Gio
+            bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+            sid = bus.signal_subscribe("dev.shani.Link", "dev.shani.Link.Calls", "CallLogged",
+                                       "/dev/shani/Link/Calls", None, Gio.DBusSignalFlags.NONE,
+                                       lambda *_a: self.load_history())
+            self._call_log_unsub = lambda: bus.signal_unsubscribe(sid)
+        except Exception:  # noqa: BLE001 - no bus: the history refreshes when the page does
+            self._call_log_unsub = None
 
     def set_status(self, status: str, summary: str, detail: str = "") -> None:
         _clear(self.status_box)
@@ -382,6 +445,12 @@ stackswitcher button {
         incall = Gtk.Box(spacing=12, halign=Gtk.Align.CENTER)
         incall.add_css_class("card")
         incall.add_css_class("dialer-incall")
+        # Who the call is with, and on which line: the first thing anyone looks for.
+        self.incall_who = _label("", wrap=False)
+        self.incall_who.add_css_class("heading")
+        self.incall_who.set_valign(Gtk.Align.CENTER)
+        self.incall_who.set_visible(False)
+        incall.append(self.incall_who)
         self.answer_button = self._round_button("call-start-symbolic", "Answer",
                                                 "dialer-answer", lambda: self.call_action("answer"))
         self.end_button = self._round_button("call-stop-symbolic", "Hang up",
@@ -438,6 +507,15 @@ stackswitcher button {
         self.call_timer = _label("", dim=True, wrap=False)
         self.call_timer.set_valign(Gtk.Align.CENTER)
         incall.append(self.call_timer)
+        # Where this computer plays the call: the speaker, headphones, a headset.
+        self.outputs = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        outputs_pop = Gtk.Popover(child=self.outputs)
+        outputs_pop.connect("show", lambda *_: self.load_outputs())
+        self.output_button = Gtk.MenuButton(icon_name="audio-speakers-symbolic", popover=outputs_pop,
+                                            valign=Gtk.Align.CENTER, tooltip_text="Audio output")
+        self.output_button.add_css_class("circular")
+        self.output_button.update_property([Gtk.AccessibleProperty.LABEL], ["Audio output"])
+        incall.append(self.output_button)
         status = Gtk.Button(icon_name="view-refresh-symbolic", valign=Gtk.Align.CENTER,
                             tooltip_text="Call status")
         status.add_css_class("flat")
@@ -460,9 +538,13 @@ stackswitcher button {
         backspace.add_css_class("circular")
         backspace.connect("clicked", lambda _b: self.number.set_text(self.number.get_text()[:-1]))
         backspace.update_property([Gtk.AccessibleProperty.LABEL], ["Delete the last digit"])
-        spacer = Gtk.Box()
-        spacer.set_size_request(34, -1)
-        display.append(spacer)
+        paste = Gtk.Button(icon_name="edit-paste-symbolic", valign=Gtk.Align.CENTER,
+                           tooltip_text="Paste a number")
+        paste.add_css_class("flat")
+        paste.add_css_class("circular")
+        paste.connect("clicked", lambda _b: self.paste())
+        paste.update_property([Gtk.AccessibleProperty.LABEL], ["Paste a number"])
+        display.append(paste)
         display.append(self.number)
         display.append(backspace)
         box.append(display)
@@ -470,6 +552,24 @@ stackswitcher button {
         self.match.set_xalign(0.5)
         self.match.add_css_class("dialer-match")
         box.append(self.match)
+        # Contacts the typed digits spell on the keypad's letters (T9) or appear
+        # in, as you type: one tap puts their number on the pad.
+        self.suggest = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE)
+        self.suggest.add_css_class("boxed-list")
+        self.suggest.set_visible(False)
+        box.append(self.suggest)
+        # Which line the call goes out on, remembered for next time.
+        line_row = Gtk.Box(spacing=8, halign=Gtk.Align.CENTER)
+        line_row.append(_label("Call on", dim=True, wrap=False))
+        self.line_ids = [k for k, _n in calls_view.LINE_CHOICES]
+        self.line_choice = Gtk.DropDown.new_from_strings([n for _k, n in calls_view.LINE_CHOICES])
+        saved = calls_view.default_line()
+        self.line_choice.set_selected(self.line_ids.index(saved))
+        self.line_choice.connect("notify::selected", lambda *_: self._line_chosen())
+        self.line_choice.set_tooltip_text("Automatic: the landline when it is connected, else your phone")
+        line_row.append(self.line_choice)
+        box.append(line_row)
+        self._refresh_lines()
 
         keys = Gtk.Grid(column_spacing=18, row_spacing=12, halign=Gtk.Align.CENTER)
         for i, k in enumerate("123456789*0#"):
@@ -493,11 +593,10 @@ stackswitcher button {
         self.devices_note.add_css_class("caption")
         box.append(self.devices_note)
         self.show_route()
-        head = _label("Recent calls")
-        head.add_css_class("heading")
-        box.append(head)
-        self.history = common.page_body(0)
-        box.append(self.history)
+        self.calls_history = calls_view.History(self)
+        self.history = self.calls_history.body
+        box.append(self.calls_history.box)
+        self.calls_history.load()
         self._wire_landline_events()
         return outer
 
@@ -641,6 +740,13 @@ stackswitcher button {
             }.get(kind)
             if text:
                 note.set_text(text)
+        if getattr(self, "incall_who", None) is not None:
+            if kind in ("incoming", "ringing", "answered") and info.get("number"):
+                number = info.get("number", "")
+                self.incall_who.set_text(f"{self.name_for(number) or info.get('name') or number} · Landline")
+                self.incall_who.set_visible(True)
+            elif kind == "ended":
+                self.incall_who.set_visible(False)
         # Answer only makes sense while a call is ringing in.
         if getattr(self, "answer_button", None) is not None:
             self.answer_button.set_sensitive(kind == "incoming")
@@ -712,13 +818,71 @@ stackswitcher button {
         button = Gtk.Button(child=face)
         button.add_css_class("dialer-key")
         button.update_property([Gtk.AccessibleProperty.LABEL], [key])
-        button.connect("clicked", lambda _b: self._key_pressed(key))
-        # Hold 0 for "+", as every phone does.
+        button.connect("clicked", lambda _b: self._key_clicked(key))
+        # Hold 0 for "+", as every phone does. The hold claims the press, so the
+        # release that follows is not also a "0" (GNOME Calls' "0+" bug class).
         if key == "0":
             hold = Gtk.GestureLongPress()
-            hold.connect("pressed", lambda *_: self.number.set_text(self.number.get_text() + "+"))
+            hold.connect("pressed", lambda g, *_: self._long_zero(g))
             button.add_controller(hold)
         return button
+
+    def _long_zero(self, gesture=None) -> None:
+        if gesture is not None:
+            gesture.set_state(Gtk.EventSequenceState.CLAIMED)
+        self._plus_held = True
+        self.number.set_text(self.number.get_text() + "+")
+
+    def _key_clicked(self, key: str) -> None:
+        if key == "0" and getattr(self, "_plus_held", False):
+            self._plus_held = False
+            return
+        self._key_pressed(key)
+
+    def paste(self) -> None:
+        """The clipboard's number on the pad: a tel: link, or the digits of
+        whatever was copied ("+91 (98) 765-43210")."""
+        display = Gdk.Display.get_default()
+        if display is None:
+            return
+
+        def done(clip, result):
+            try:
+                text = clip.read_text_finish(result) or ""
+            except GLib.Error:
+                text = ""
+            number = calls_view.dialable(text)
+            if number:
+                self.number.set_text(number)
+            else:
+                self.call_note.set_text("There is no phone number on the clipboard.")
+        display.get_clipboard().read_text_async(None, done)
+
+    def selected_line(self) -> str:
+        choice = getattr(self, "line_choice", None)
+        if choice is None:
+            return "auto"
+        return self.line_ids[min(choice.get_selected(), len(self.line_ids) - 1)]
+
+    def _line_chosen(self) -> None:
+        calls_view.set_default_line(self.selected_line())
+
+    def _refresh_lines(self) -> None:
+        """Which lines this computer has, asked once when the dial pad is built
+        (and on Reload): the landline set up, a phone, a voice modem."""
+        def work():
+            from shani_link import mm_voice
+            from shani_link.app import line as landline
+            return {"landline": landline.is_set_up(), "modem": mm_voice.available()}
+
+        def done(result):
+            if isinstance(result, Exception):
+                return
+            self._has_modem = bool(result.get("modem"))
+            self.line_choice.set_tooltip_text(
+                "Automatic: the landline when it is connected, else your phone"
+                + ("; this computer's mobile modem is there too" if self._has_modem else ""))
+        _in_thread(work, done)
 
     def _key_pressed(self, key: str) -> None:
         """A keypad press: a tone down the live call, or a digit into the field.
@@ -726,6 +890,12 @@ stackswitcher button {
         During an active landline call the keypad is the phone's keypad - it
         sends DTMF so you can work a menu ("press 1 for ...") - not a text field.
         """
+        if getattr(self, "_modem_call", ""):
+            # the modem's live call: the keypad keys tones into it
+            from shani_link import mm_voice
+            _in_thread(lambda: mm_voice.dtmf(key), lambda _r: None)
+            self.number.set_text(self.number.get_text() + key)
+            return
         try:
             from shani_link.app import line as landline
             if landline.in_call():
@@ -741,6 +911,17 @@ stackswitcher button {
         typed = "".join(ch for ch in self.number.get_text() if ch.isdigit() or ch == "+")
         name = self.name_for(typed) if len(typed) >= 6 else ""
         self.match.set_text(name)
+        suggest = getattr(self, "suggest", None)
+        if suggest is None:
+            return
+        _clear(suggest)
+        found = [] if name else calls_view.suggestions(typed, self.book)
+        for who, number in found:
+            row = common.row(who, number, activatable=True)
+            row.connect("activated", lambda _r, n=number: self.number.set_text(n))
+            row.suggestion = number
+            suggest.append(row)
+        suggest.set_visible(bool(found))
 
     def _number_for_name(self, name: str) -> str:
         """A number for a typed contact name: the loaded book first, then the cache."""
@@ -762,8 +943,11 @@ stackswitcher button {
         Chronoa put a "Turn on" button for its assistant switch there)."""
         return Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6), None
 
-    def call(self, number: str) -> None:
+    def call(self, number: str, line: str = "") -> None:
+        """Call `number` on `line` (a history row's), else the line chosen on the
+        dial pad; "auto" is the landline when it is up, else the phone."""
         number = (number or "").strip()
+        line = line if line in ("landline", "phone", "modem") else self.selected_line()
         if not number:
             self.call_note.set_text("Type a number first.")
             return
@@ -774,9 +958,15 @@ stackswitcher button {
                 self.call_note.set_text(f"No contact matching '{number}'.")
                 return
             number = resolved
+        if line == "modem":
+            self.call_modem(number)
+            return
+        if line == "landline" and not self._landline_ready():
+            self.call_note.set_text("Not called: the landline is not connected.")
+            return
         # The JioFiber landline, when it is connected, is the same dialer's
         # first line - it needs no phone and no Bluetooth (landline/__init__.py).
-        if self._landline_ready():
+        if line != "phone" and self._landline_ready():
             from shani_link.app import line as landline
             from shani_link.app.line import dial_user
             try:
@@ -800,6 +990,76 @@ stackswitcher button {
             else:
                 self.call_note.set_text(f"Opened the dialer on {dev.name} with {number} - press call there.")
         _in_thread(lambda: ph.dial(dev, number), done)
+
+    def call_modem(self, number: str) -> None:
+        """A call on this computer's own mobile modem (ModemManager)."""
+        from shani_link import mm_voice
+        self.call_note.set_text(f"Calling {number} on the mobile modem...")
+
+        def done(result):
+            if isinstance(result, Exception):
+                self.call_note.set_text(f"Not called: {result}")
+                return
+            self._modem_call = result
+            self.incall_who.set_text(f"{self.name_for(number) or number} · Mobile")
+            self.incall_who.set_visible(True)
+            self.call_note.set_text(f"Calling {number} on the mobile modem. Hang up here when you are done.")
+            self._follow_modem_call(result)
+        _in_thread(lambda: mm_voice.dial(number), done)
+
+    def _follow_modem_call(self, path: str) -> None:
+        """The modem call's state, from ModemManager's own signal while it lasts:
+        the timer starts when it is answered and everything clears when it ends."""
+        try:
+            from gi.repository import Gio
+            from shani_link import mm_voice
+            bus = mm_voice._bus()
+        except Exception:  # noqa: BLE001
+            return
+
+        def changed(_c, _s, _p, _i, _sig, params):
+            new = mm_voice.STATES.get(int(params.unpack()[1]), "")
+            GLib.idle_add(lambda: (self._modem_state(new), False)[1])
+        sid = bus.signal_subscribe(mm_voice.MM, mm_voice.CALL, "StateChanged", path, None,
+                                   Gio.DBusSignalFlags.NONE, changed)
+        self._modem_unsub = lambda: bus.signal_unsubscribe(sid)
+
+    def _modem_state(self, state: str) -> None:
+        if state == "active":
+            self._start_call_timer()
+        elif state == "terminated":
+            self._modem_call = ""
+            self._stop_call_timer()
+            self.incall_who.set_visible(False)
+            self.call_note.set_text("Mobile call ended.")
+            unsub = getattr(self, "_modem_unsub", None)
+            if unsub:
+                unsub()
+                self._modem_unsub = None
+            self.load_history()
+
+    def load_outputs(self) -> None:
+        """The speakers and headsets this computer could play the call on."""
+        from shani_link import audio as pipewire
+
+        def done(result):
+            _clear(self.outputs)
+            sinks = [] if isinstance(result, Exception) else result
+            if not sinks:
+                self.outputs.append(_label("No audio outputs found.", dim=True))
+                return
+            group = None
+            for sink in sinks:
+                button = Gtk.CheckButton(label=sink["name"], group=group, active=sink["default"])
+                group = group or button
+                button.connect("toggled", lambda b, i=sink["id"]: b.get_active() and self.set_output(i))
+                self.outputs.append(button)
+        _in_thread(lambda: pipewire.parse_status(
+            getattr(pipewire.run_wpctl("status"), "stdout", "") or "")["Sinks"], done)
+
+    def set_output(self, sink_id: int) -> None:
+        from shani_link import audio as pipewire
+        _in_thread(lambda: pipewire.run_wpctl("set-default", str(sink_id)), lambda _r: None)
 
     def show_route(self) -> None:
         """Which way the toggle points, and the PC's speaker and mic by name."""
@@ -873,6 +1133,22 @@ stackswitcher button {
                 self.call_note.set_text(str(exc))
             self._refresh_call_controls()
             return
+        if getattr(self, "_modem_call", "") or (action == "answer" and getattr(self, "_has_modem", False)
+                                                and not has_call):
+            from shani_link import mm_voice
+            fn = mm_voice.answer if action == "answer" else mm_voice.hangup
+            self.call_note.set_text("...")
+
+            def modem_done(result):
+                if isinstance(result, Exception) or not result:
+                    self.call_note.set_text(f"Nothing to {'answer' if action == 'answer' else 'hang up'} "
+                                            "on the mobile modem." if not isinstance(result, Exception)
+                                            else str(result))
+                else:
+                    self.call_note.set_text("Answered." if action == "answer" else "Hung up.")
+            if action in ("answer", "hangup"):
+                _in_thread(fn, modem_done)
+                return
         if has_call or (action == "answer" and up):
             try:
                 landline.answer() if action == "answer" else landline.hangup()
@@ -1024,46 +1300,11 @@ stackswitcher button {
         _in_thread(work, done)
 
     def load_history(self) -> None:
-        # The landline keeps its own local log (placed / received / missed); show
-        # it whenever there is one, with or without a phone connected.
-        from shani_link.app import line as landline
-        landline_rows = landline.history()
-        if self.device is None or ph.backend() != "bluetooth":
-            if landline_rows:
-                self._show_landline_history(landline_rows)
-            else:
-                self.notice(self.history, "Recent calls are read over Bluetooth only.")
-            return
-        self.notice(self.history, "Reading recent calls...")
-        from shani_link import phone_bluez
-        dev = self.device
-
-        def done(result):
-            if isinstance(result, Exception):
-                self.notice(self.history, f"Could not read recent calls: {result}")
-                return
-            _clear(self.history)
-            lb = _list()
-            for c in result[:30]:
-                who = c["name"] or self.name_for(c["number"]) or c["number"]
-                lb.append(_item(who, f"{c['kind'] or 'call'} - {_when(c['date'])}",
-                                _button("Call", lambda n=c["number"]: self.call(n), icon="call-start-symbolic")))
-            self.history.append(lb if result else _label("No recent calls.", dim=True))
-        _in_thread(lambda: phone_bluez.call_history(dev.id, 30), done)
-
-    def _show_landline_history(self, rows: "list[dict]") -> None:
-        """Recent landline calls, newest first, each with one-tap redial."""
-        _clear(self.history)
-        lb = _list()
-        for c in rows[:30]:
-            number = c.get("number", "")
-            who = c.get("name") or self.name_for(number) or number or "Unknown"
-            kind = c.get("kind", "call")
-            when = _when(c.get("when", 0) * 1000) if c.get("when") else ""
-            lb.append(_item(who, f"{kind} · landline{(' · ' + when) if when else ''}",
-                            _button("Call", lambda n=number: self.call(n),
-                                    icon="call-start-symbolic")))
-        self.history.append(lb)
+        """Every line's calls, newest first, under a heading per day
+        (`calls_view.History`; the landline, the phone and the modem share it)."""
+        history = getattr(self, "calls_history", None)
+        if history is not None:
+            history.load()
 
     # --- messages -------------------------------------------------------------
 
@@ -1147,21 +1388,19 @@ stackswitcher button {
     # --- contacts ---------------------------------------------------------------
 
     def contacts_tab(self) -> Gtk.Widget:
-        box = common.page_body(10)
-        self.search = Gtk.SearchEntry(placeholder_text="Search contacts")
-        self.search.connect("search-changed", lambda _e: self.show_contacts())
-        box.append(self.search)
-        self.contact_list = common.page_body(0)
-        box.append(self.contact_list)
-        return box
+        """Your own address book with the phone's contacts beside it
+        (`contacts_view`, what GNOME Contacts did)."""
+        from shani_link.app.contacts_view import ContactsView
+        self.contacts_view = ContactsView(call=self.call, message=self.message,
+                                          phone_book=lambda: self.book)
+        return self.contacts_view.widget
 
     def load_contacts(self) -> None:
-        self.notice(self.contact_list, "Reading contacts...")
         dev = self.device
 
         def done(result):
             if isinstance(result, Exception):
-                self.notice(self.contact_list, f"Could not read contacts: {result}")
+                self.contacts_view.toast(f"Could not read the phone's contacts: {result}")
                 return
             self.book = sorted(result, key=lambda c: c[0].lower())
             # Remember them so the landline can be dialled by name later, even
@@ -1175,20 +1414,7 @@ stackswitcher button {
         _in_thread(lambda: ph.contacts(dev), done)
 
     def show_contacts(self) -> None:
-        if not self.book:
-            return
-        q = self.search.get_text().strip().lower()
-        hits = [c for c in self.book if q in c[0].lower() or any(q in n for n in c[1])] if q else self.book
-        _clear(self.contact_list)
-        lb = _list()
-        for name, numbers in hits[:60]:
-            suffix = Gtk.Box(spacing=4)
-            suffix.append(_button("Call", lambda n=numbers[0]: self.call(n), icon="call-start-symbolic"))
-            suffix.append(_button("Text", lambda n=numbers[0]: self.to.set_text(n), icon="mail-message-new-symbolic"))
-            lb.append(_item(name, ", ".join(numbers), suffix))
-        self.contact_list.append(lb)
-        if len(hits) > 60:
-            self.contact_list.append(_label(f"{len(hits) - 60} more - search to narrow.", dim=True))
+        self.contacts_view.refresh()
 
     # --- music ------------------------------------------------------------------
 

@@ -128,9 +128,10 @@ def test_pages_meet_an_empty_machine_with_its_reason(built):
                for t in pages["phone"]["texts"] + pages["devices/paired"]["texts"])
     assert any("Bluetooth did not answer" in t or "No Bluetooth devices" in t or "Reading" in t
                for t in pages["watch"]["texts"]), pages["watch"]["texts"]
-    # only the one switch that was always on unless turned off (media keys)
+    # only the switches that are on unless turned off: media keys, and the
+    # computer's own modem ringing (which never rings without a voice modem)
     assert pages["background"]["status"] == "ok"
-    assert any("1 of 10 on" in t for t in pages["background"]["texts"]), pages["background"]["texts"]
+    assert any("2 of 11 on" in t for t in pages["background"]["texts"]), pages["background"]["texts"]
 
 
 @needs_display

@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Shani Link Dialer
+GenericName=Phone
+Comment=Open phone links (tel:) on the dial pad; nothing is dialled until you press Call
+Exec=shani-link-app --dial %u
+Icon=phone
+Terminal=false
+NoDisplay=true
+MimeType=x-scheme-handler/tel;
+Categories=Network;Telephony;
+StartupNotify=true

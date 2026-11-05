@@ -12,7 +12,9 @@ APP_ID = "dev.shani.Link.App"
 
 
 def _parse(argv: "list[str]") -> dict:
-    """`--page=NAME` and `--connect[=ROUTE]` (ROUTE: bluetooth, android, kdeconnect)."""
+    """`--page=NAME`, `--connect[=ROUTE]` (ROUTE: bluetooth, android, kdeconnect),
+    `--dial[=URI]` (a tel: link or a number, onto the dial pad - never dialled)
+    and `--message[=NUMBER]` (the Messages tab, addressed)."""
     out: dict = {}
     args = list(argv)
     while args:
@@ -25,6 +27,14 @@ def _parse(argv: "list[str]") -> dict:
             out["connect"] = arg.split("=", 1)[1]
         elif arg == "--connect":
             out["connect"] = args.pop(0) if args and not args[0].startswith("-") else ""
+        elif arg.split("=", 1)[0] in ("--dial", "--message"):
+            key = arg[2:].split("=", 1)[0]
+            if "=" in arg:
+                out[key] = arg.split("=", 1)[1]
+            else:
+                # `Exec=shani-link-app --dial %u` passes nothing when opened from
+                # the menu: then it is the dial pad, empty
+                out[key] = args.pop(0) if args and not args[0].startswith("--") else ""
     return out
 
 
@@ -57,6 +67,10 @@ def make_app():
             window.present()
             if "connect" in opts:
                 window.open_connect(opts["connect"])
+            if "dial" in opts:
+                window.open_dial(opts["dial"])
+            if "message" in opts:
+                window.open_message(opts["message"])
             return 0
 
     return LinkApp()

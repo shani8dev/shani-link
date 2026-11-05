@@ -157,6 +157,15 @@ def clear() -> None:
         _write([])
 
 
+def restore(old: List[dict]) -> None:
+    """Put rows back (Undo after Clear all), keeping any logged since."""
+    with _locked():
+        current = _read()
+        have = {r.get("id") for r in current}
+        merged = current + [r for r in old if r.get("id") not in have]
+        _write(sorted(merged, key=lambda r: r.get("when", 0), reverse=True))
+
+
 def on_logged(callback: Callable[[dict], None]) -> Callable[[], None]:
     """`callback(row)` for every call as it is logged (the service's CallLogged
     signal, so an open history refreshes); returns the undo."""

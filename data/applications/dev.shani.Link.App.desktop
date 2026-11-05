@@ -6,6 +6,6 @@ Exec=shani-link-app
 Icon=phone
 Terminal=false
 Categories=Utility;
-Keywords=phone;call;landline;watch;bluetooth;android;sms;nfc;radio;infrared;
+Keywords=phone;call;landline;contacts;address book;dialer;watch;bluetooth;android;sms;nfc;radio;infrared;
 StartupNotify=true
 X-GNOME-UsesNotifications=true

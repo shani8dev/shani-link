@@ -292,6 +292,27 @@ class LinkWindow(Adw.ApplicationWindow):
         elif name == "show-page":
             self.show_page(str(value or ""))
 
+    def _phone_panel(self):
+        return getattr(self.show_page("phone"), "panel", None)
+
+    def open_dial(self, uri: str = "") -> None:
+        """A tel: link (or a number) onto the dial pad. **Never dialled here**:
+        a link is somebody else's text, and the person presses Call."""
+        from shani_link import tel_uri
+        panel = self._phone_panel()
+        if panel is None:
+            return
+        target = tel_uri.parse(uri) if uri.strip() else tel_uri.Target("")
+        note = target.problem or (f"Press Call to call {target.number}." if target.number else "")
+        if target.extension:
+            note += f" Then key in the extension, {target.extension}."
+        panel.prefill(target.number, note)
+
+    def open_message(self, number: str = "") -> None:
+        panel = self._phone_panel()
+        if panel is not None:
+            panel.message(number)
+
     def open_connect(self, route: str = "") -> None:
         from shani_link.app.connect_device import ConnectDeviceWindow
         window = ConnectDeviceWindow(self.ctx, route, transient_for=self)
