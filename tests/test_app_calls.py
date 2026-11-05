@@ -202,6 +202,25 @@ def test_the_contacts_tab_is_the_address_book(panel):
     assert panel.name_for("18001234") == "Bank"
 
 
+def test_history_drawn_before_the_phone_book_arrives_is_named_once_it_does(panel, monkeypatch, tmp_path):
+    """A number only in the phone's contacts: the history is drawn on connect,
+    the phone's book arrives seconds later (PBAP), and the row must then read
+    "Amma" - with no service to write the cache file through."""
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    from shani_link import calls_log
+    from shani_link import phone as ph
+    calls_log.add("phone", "+91 98220 11111", "in", True, seconds=60)
+    panel.load_history()
+    assert [r.get_title() for r in _history_rows(panel)] == ["+91 98220 11111"]
+    monkeypatch.setattr(ph, "contacts", lambda _dev: [("Amma", ("+91 98220 11111",))])
+    panel.load_contacts()
+    pump(lambda: [r.get_title() for r in _history_rows(panel)] == ["Amma"], 5)
+    assert [r.get_title() for r in _history_rows(panel)] == ["Amma"]
+    # and every other lookup in the app, the page's own book aside
+    from shani_link import contacts
+    assert contacts.name_for("09822011111") == "Amma"
+
+
 HARNESS = r'''
 import json, sys, time
 import gi

@@ -319,9 +319,9 @@ HISTORY_MAX = 100
 def history() -> "list[dict]":
     """Recent landline calls, newest first: {number, name, kind, when, seconds}
     (kind: placed, received or missed) - the shape this has always returned."""
-    from shani_link import calls_log
+    from shani_link import calls_log, contacts
     out = []
-    for r in calls_log.rows(HISTORY_MAX, line="landline"):
+    for r in contacts.named(calls_log.rows(HISTORY_MAX, line="landline")):
         kind = "missed" if r.get("missed") else ("received" if r.get("direction") == "in" else "placed")
         out.append({"number": r.get("number", ""), "name": r.get("name", ""), "kind": kind,
                     "when": r.get("when", 0), "seconds": r.get("seconds", 0)})

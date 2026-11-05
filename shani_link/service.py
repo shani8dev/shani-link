@@ -251,7 +251,8 @@ class Service:
             if method == "SendDtmf":
                 return b(lines.dtmf(a[0], a[1]))
             if method == "RecentCalls":
-                return GLib.Variant("(s)", (_json(calls_log.rows(int(a[0]))),))
+                from shani_link import contacts   # a row logged before the book was read is named now
+                return GLib.Variant("(s)", (_json(contacts.named(calls_log.rows(int(a[0])))),))
             if method == "DeleteCall":
                 return b(calls_log.delete(a[0]))
             if method == "ClearCalls":

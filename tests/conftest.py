@@ -82,3 +82,15 @@ os.environ["DBUS_SYSTEM_BUS_ADDRESS"] = f"unix:path={_NOWHERE}"
 
 def pytest_sessionfinish(session, exitstatus):
     _stop_broadway()
+
+
+import pytest  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _forget_the_phone_book():
+    """The phone's contacts a test's Phone page read stay in that test: a
+    later test's call history must not be named from them."""
+    yield
+    from shani_link import contacts
+    contacts.remember_phone_book([])

@@ -128,3 +128,17 @@ def test_the_phones_internet_is_switched_over_the_bus(tmp_path, monkeypatch):
     calls = json.loads(state.read_text())["calls"]
     assert ["connection", "add", "type", "bluetooth", "bt-type", "panu", "bluetooth.bdaddr",
             "AA:00:00:00:00:01", "con-name", "Phone internet"] in calls, calls
+
+
+def test_recent_calls_are_named_from_the_phones_cached_book(tmp_path, monkeypatch):
+    """A call logged before the phone's contacts were read has no name in the
+    file; a client of RecentCalls (the shell, Chronoa) still gets "Amma"."""
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    sys.path.insert(0, ROOT)
+    from shani_link import calls_log, landline
+    calls_log.add("phone", "+91 98220 11111", "in", True, seconds=30)
+    landline.cache_contacts([("Amma", ("+919822011111",))])
+    out = on_bus(_gdbus("/dev/shani/Link/Calls", "RecentCalls", "10"), tmp_path)
+    assert '"name": "Amma"' in out or '\\"name\\": \\"Amma\\"' in out, out
+    assert calls_log.rows()[0]["name"] == "", "named when read, the file left as it was"

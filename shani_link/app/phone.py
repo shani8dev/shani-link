@@ -1745,14 +1745,20 @@ stackswitcher button {
                 self.contacts_view.toast(f"Could not read the phone's contacts: {result}")
                 return
             self.book = sorted(result, key=lambda c: c[0].lower())
-            # Remember them so the landline can be dialled by name later, even
-            # with no phone connected and from the headless skill.
+            # Every lookup in this process names from them now (the history,
+            # a message, the call card), service or not...
+            ct.remember_phone_book(self.book)
+            # ...and remember them so the landline can be dialled by name later,
+            # even with no phone connected and from the headless skill.
             try:
                 from shani_link.app import line as landline
                 landline.cache_contacts(self.book)
             except Exception:  # noqa: BLE001
                 pass
             self.show_contacts()
+            # the history was drawn before the phone's book arrived (it takes
+            # seconds over PBAP): draw it again so its numbers become names
+            self.load_history()
         _in_thread(lambda: ph.contacts(dev), done)
 
     def show_contacts(self) -> None:

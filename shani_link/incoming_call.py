@@ -260,6 +260,9 @@ class IncomingCallWatcher:
             dev = next((d for d in ph.devices() if d.reachable), None)
             self._book = ph.contacts(dev) if dev is not None else []
             self._book_at = time.monotonic()
+            if self._book:          # the service's other lines (landline, modem) name from it too
+                from shani_link import contacts
+                contacts.remember_phone_book(self._book)
         except Exception:  # noqa: BLE001 - a number with no name still rings
             logger.info("incoming call: contacts not read", exc_info=True)
         return self._book

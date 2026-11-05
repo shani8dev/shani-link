@@ -147,6 +147,30 @@ def test_lookup_prefers_your_own_contact_over_the_phones(book):
     assert ct.lookup("") == ("", None)
 
 
+def test_a_number_only_in_the_cached_phone_book_is_named_beside_a_callers_book(book):
+    """The caller's loaded book does not hide the cached one: a number only the
+    cache has is still named, not shown as "+91 98220 11111"."""
+    from shani_link import landline
+    landline.cache_contacts([("Amma", ("+91 98220 11111",))])
+    assert ct.lookup("+91 98220 11111", [("Bank", ("18001234",))])[0] == "Amma"
+    assert ct.name_for("09822011111", [("Bank", ("18001234",))]) == "Amma"
+    assert ct.name_for("18001234", [("Bank", ("18001234",))]) == "Bank"
+
+
+def test_the_phone_book_this_process_read_names_numbers_with_no_cache_file(book):
+    """The app caches the phone's book through the service; with the service
+    away nothing reaches the disk, and the book it read still names calls."""
+    assert ct.name_for("+91 98220 11111") == ""
+    ct.remember_phone_book([("Amma", ("+91 98220 11111",)), ("", ("1",)), ("Nobody", ())])
+    assert ct.phone_contacts() == [("Amma", ("+91 98220 11111",))]
+    name, contact = ct.lookup("+919822011111")
+    assert name == "Amma" and contact.source == "phone"
+    rows = [{"number": "+91 98220 11111", "name": ""}, {"number": "+911", "name": "Kept"},
+            {"number": "", "name": ""}]
+    assert [r["name"] for r in ct.named(rows)] == ["Amma", "Kept", ""]
+    assert rows[0]["name"] == "", "named() copies, it does not edit the caller's rows"
+
+
 def test_search_puts_yours_first_and_hides_the_phones_copy_of_the_same(book):
     book.save(ct.Contact(full_name="Amma", phones=[("cell", "+919800000001")]))
     found = ct.search("amma", phone_book=[("Amma", ("09800000001",)), ("Ammachi", ("1112223334",))])

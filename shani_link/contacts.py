@@ -558,8 +558,26 @@ def book() -> Book:
     return _BOOK
 
 
+#: The phone's contacts as this process last read them (PBAP or GSConnect, by
+#: the Phone page), so a lookup has them even when the on-disk cache could not
+#: be written - the app writes that through the service, which may be away.
+_REMEMBERED: List[Tuple[str, Tuple[str, ...]]] = []
+_REMEMBERED_LOCK = threading.Lock()
+
+
+def remember_phone_book(phone_book: Sequence[Tuple[str, Sequence[str]]]) -> None:
+    """Keep the phone's contacts, as just read, for every later lookup here."""
+    kept = [(str(n), tuple(str(x) for x in nums)) for n, nums in phone_book if n and nums]
+    with _REMEMBERED_LOCK:
+        _REMEMBERED[:] = kept
+
+
 def phone_contacts() -> List[Tuple[str, Tuple[str, ...]]]:
-    """The phone's contacts as last cached by the Phone page ([] when never read)."""
+    """The phone's contacts: as this process last read them, else as the Phone
+    page cached them on disk (the landline's cache_contacts); [] when never read."""
+    with _REMEMBERED_LOCK:
+        if _REMEMBERED:
+            return list(_REMEMBERED)
     try:
         from shani_link import landline
         return [(str(n), tuple(nums)) for n, nums in landline.history_contacts() if n and nums]
@@ -572,18 +590,32 @@ def lookup(number: str, phone_book: Optional[Sequence[Tuple[str, Sequence[str]]]
     """(name, contact) for a phone number, or ("", None) when nobody has it.
 
     Your own contacts first, then the phone's: `phone_book` when the caller has
-    it loaded, else the cached copy. A phone contact comes back marked
-    `source="phone"`, so a screen can offer "Save to my contacts".
+    it loaded, then the cached copy (`phone_contacts`) - a number only in the
+    phone's book is named even when the caller's own copy is empty or older.
+    A phone contact comes back marked `source="phone"`, so a screen can offer
+    "Save to my contacts".
     """
     if not number or not digits(number):
         return "", None
     own = book().lookup(number)
     if own is not None:
         return own.display_name(), own
-    for name, numbers in (phone_book if phone_book is not None else phone_contacts()):
-        if any(same_number(number, n) for n in numbers):
-            return str(name), from_phone(str(name), numbers)
+    for books in (phone_book or (), phone_contacts()):
+        for name, numbers in books:
+            if any(same_number(number, n) for n in numbers):
+                return str(name), from_phone(str(name), numbers)
     return "", None
+
+
+def named(rows: Iterable[dict]) -> List[dict]:
+    """Call-history rows with an empty "name" filled from `lookup`, so a call
+    logged before the phone's contacts were read still shows who it was."""
+    out = []
+    for row in rows:
+        if not row.get("name") and row.get("number"):
+            row = dict(row, name=lookup(str(row["number"]))[0])
+        out.append(row)
+    return out
 
 
 def name_for(number: str, phone_book=None) -> str:
