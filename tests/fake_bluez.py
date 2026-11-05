@@ -70,7 +70,7 @@ _XML = """
 GATT_HR = "0000180d-0000-1000-8000-00805f9b34fb"
 CLASSIC_AUDIO = "0000110b-0000-1000-8000-00805f9b34fb"
 
-#: name -> (address, icon, appearance, address type, uuids, behaviour)
+#: name -> (address, icon, appearance, address type, uuids, behaviour[, {more props}])
 DEVICES = {
     "Pixel 9": ("AA:00:00:00:00:01", "phone", 0, "public", [], "confirm"),
     "WH-1000XM5": ("AA:00:00:00:00:02", "audio-headset", 0, "public", [CLASSIC_AUDIO], "justworks"),
@@ -129,7 +129,7 @@ class FakeBluez:
         self._changed(path, "org.bluez.Device1", changed)
 
     def _discover_all(self) -> bool:
-        for rssi, (name, (address, icon, appearance, atype, uuids, behaviour)) in enumerate(
+        for rssi, (name, (address, icon, appearance, atype, uuids, behaviour, *extra)) in enumerate(
                 self.devices.items()):
             path = _path(address)
             if path in self.objects:
@@ -146,6 +146,8 @@ class FakeBluez:
                 props["Icon"] = GLib.Variant("s", icon)
             if appearance:
                 props["Appearance"] = GLib.Variant("q", appearance)
+            if extra:                   # more properties, already as variants (Modalias, ...)
+                props.update(extra[0])
             self.objects[path] = props
             self._behaviour[path] = behaviour
             self._emit("/", "org.freedesktop.DBus.ObjectManager", "InterfacesAdded",

@@ -327,8 +327,13 @@ class ConnectDeviceWindow(Adw.Window):
         signal = ("" if device.rssi is None else
                   " · strong signal" if device.rssi > -60 else
                   " · weak signal" if device.rssi < -80 else "")
+        words = KIND_WORDS.get(device.kind, "")
+        if device.apple:
+            # Pairing an iPhone is for its sound; say so before Pair is pressed.
+            from shani_link import apple
+            words = "iPhone - Bluetooth audio only. " + apple.NOT_POSSIBLE
         row = Adw.ActionRow(title=GLib.markup_escape_text(device.name),
-                            subtitle=KIND_WORDS.get(device.kind, "") + signal)
+                            subtitle=GLib.markup_escape_text(words + signal))
         row.add_prefix(Gtk.Image(icon_name=KIND_ICON.get(device.kind, "bluetooth-symbolic"),
                                  pixel_size=24))
         gatt_first = device.le and device.kind in ("watch", "other")
@@ -426,6 +431,9 @@ class ConnectDeviceWindow(Adw.Window):
     @staticmethod
     def _bt_next_words(device, why: str) -> str:
         note = "" if why in ("paired and connected", "connected") else f" ({why}.)"
+        if getattr(device, "apple", False):
+            from shani_link import apple
+            return apple.summary() + note
         return {
             "phone": "Calls and texts go through it on the Phone page. On the phone, allow "
                      "\"Contacts and call history\" and \"Text messages\" for this computer "
@@ -436,6 +444,8 @@ class ConnectDeviceWindow(Adw.Window):
         }.get(device.kind, "It reconnects by itself from now on.") + note
 
     def _bt_next_actions(self, device) -> "list":
+        if getattr(device, "apple", False):
+            return []           # no Phone page for an iPhone: its calls and texts cannot work here
         return {"phone": [("Open Phone", lambda: self._show_panel("phone"), "")],
                 "watch": [("Open Watch", lambda: self._show_panel("watch"), "")],
                 }.get(device.kind, [("Open Devices", lambda: self._show_panel("devices"), "")]

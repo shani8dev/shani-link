@@ -324,14 +324,38 @@ def _device_row(device: Any, read_at: float) -> Gtk.Widget:
     ObjectManager or `kdeconnect-cli` - which is why it goes through `_row`'s
     escaping rather than straight into a label.
     """
+    from shani_link import apple
     name = getattr(device, "name", "") or getattr(device, "id", "") or "(unnamed)"
-    subtitle = " · ".join(part for part in (_kind(device), _battery(device)) if part)
+    subtitle = " · ".join(part for part in (_kind(device), _battery(device),
+                                            "Bluetooth audio and files over USB only"
+                                            if apple.is_apple(name) else "") if part)
     widget = common.row(name, subtitle,
                         suffix=Gtk.Image(icon_name="phone-symbolic" if getattr(device, "reachable", False)
                                          else "network-offline-symbolic"))
     widget.add_css_class(ROW_CSS)
     widget.add_css_class(DEVICE_CSS)
     return widget
+
+
+#: Where iPhones on a USB cable are looked for (`apple.usb_iphones`); a test points it elsewhere.
+USB_SYSFS = "/sys/bus/usb/devices"
+APPLE_CSS = "devices-apple"
+
+
+def _apple_group(devices: "list") -> Optional[Gtk.Widget]:
+    """What works with an iPhone, said once, when one is paired or on a USB
+    cable - and no button, since calls and texts through it cannot work."""
+    from shani_link import apple
+    names = [getattr(d, "name", "") for d in devices if apple.is_apple(getattr(d, "name", ""))]
+    names += [f"{n} (on the USB cable)" for n in apple.usb_iphones(USB_SYSFS)]
+    if not names:
+        return None
+    group = common.group(apple.HEADLINE)
+    row = common.row(names[0], apple.summary(), suffix=Gtk.Image(icon_name="phone-symbolic"))
+    row.add_css_class(ROW_CSS)
+    row.add_css_class(APPLE_CSS)
+    _add_row(group, row)
+    return group
 
 
 def build(app) -> Gtk.Widget:
@@ -354,6 +378,9 @@ def build(app) -> Gtk.Widget:
         column.append(common.empty_state(
             ICON, _text(state.headline), _text(state.body),
             child=common.connect_button(app)))
+        iphone = _apple_group([])
+        if iphone is not None:
+            column.append(iphone)
         return common.scrolled(column)
 
     which = _backend()
@@ -397,6 +424,9 @@ def build(app) -> Gtk.Widget:
     for device in devices:
         _add_row(group, _device_row(device, read_at))
     body.append(group)
+    iphone = _apple_group(devices)
+    if iphone is not None:
+        body.append(iphone)
 
     set_content(common.scrolled(body))
     page.status = recorder.status

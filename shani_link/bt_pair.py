@@ -38,6 +38,8 @@ from typing import Callable, Dict, List, Optional
 
 from gi.repository import Gio, GLib
 
+from shani_link import apple
+
 logger = logging.getLogger(__name__)
 
 BLUEZ = "org.bluez"
@@ -137,6 +139,8 @@ class Device:
     #: used by connecting - see `Pairing.connect_only`.
     le: bool = False
     trusted: bool = False
+    #: An iPhone or other Apple device (`apple.is_apple`): no calls or texts.
+    apple: bool = False
 
 
 @dataclass
@@ -306,7 +310,9 @@ class Pairing:
                       connected=bool(props.get("Connected")),
                       rssi=int(rssi) if rssi is not None else None,
                       le=is_low_energy(props.get("AddressType", ""), props.get("UUIDs")),
-                      trusted=bool(props.get("Trusted")))
+                      trusted=bool(props.get("Trusted")),
+                      apple=apple.is_apple(name, str(props.get("Modalias") or ""),
+                                           list(props.get("ManufacturerData") or {})))
 
     def nearby(self) -> List[Device]:
         """Devices on this adapter that could be paired: named, not paired.
