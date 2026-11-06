@@ -189,12 +189,9 @@ def test_a_broken_engine_is_a_sentence_not_a_freeze(monkeypatch):
 
 def test_the_buttons_come_back_after_a_slow_action(dispatched):
     """A 90-second probe must leave the panel usable."""
-    import time
-
     from shani_link.app import screen_share as mod
     # drive the worker the way the panel does, then let the idle fire
     page, surface = _build()
-    monkey = None
     original = mod.threading.Thread
     mod.threading.Thread = lambda **kw: original(
         target=kw["target"], daemon=kw.get("daemon", True), name=kw.get("name"))
@@ -220,7 +217,6 @@ def test_the_panel_does_not_freeze_the_loop_during_a_probe(monkeypatch):
     the same failure here would freeze the window for up to 90 seconds.
     """
     page, surface = _build()
-    called = []
     monkeypatch.setattr(surface_mod, "_pump_noop", lambda: None, raising=False)
     # A worker is what makes this true; assert one is started rather than that
     # the work happened inline.

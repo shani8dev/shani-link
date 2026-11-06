@@ -13,10 +13,8 @@ is a temporary one so the real KDE Connect certificate is never read.
 import json
 import os
 import pathlib
-import shutil
 import subprocess
 import sys
-import time
 
 import pytest
 

@@ -25,7 +25,7 @@ same in a narrow window and every view can be checked by a test.
 from __future__ import annotations
 
 import logging
-from typing import Any, Callable, Dict, List, Optional
+from typing import Callable, Dict, List, Optional
 
 import gi
 

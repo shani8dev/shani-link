@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any, Callable, List, Optional
+from typing import Any, Callable, List
 
 import gi
 

@@ -5,10 +5,7 @@ Line so they can fail without a router in the room.
 """
 from __future__ import annotations
 
-import socket
 import struct
-
-import pytest
 
 from shani_link.landline import media, ua
 
@@ -88,7 +85,6 @@ def test_mixer_saturates_at_the_ceiling():
 def test_merge_refuses_with_fewer_than_two_calls():
     line, call = ua._bare_line() if hasattr(ua, "_bare_line") else (None, None), None
     # guard refusal on instance count rather than walk the whole app
-    import shani_link.landline as landline
     # Use a fresh, disconnected Line
     line = ua.Line("127.0.0.1", {"realm": "r", "user": "u", "password": "p"}, "aabbcc")
     line.local_ip, line.local_port, line.number = "127.0.0.1", 5060, "+912040001234"

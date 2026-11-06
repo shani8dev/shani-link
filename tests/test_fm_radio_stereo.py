@@ -286,9 +286,7 @@ class TestRoundTripLevels:
         """Before the pre-emphasis fix the pilot was 76x stronger than the
         subcarrier it was supposed to lock to."""
         a = F._deemphasis_pole(32000, 75e-6)
-        mono = [0.5 * math.sin(2.0 * math.pi * 1000 * i / IQ) for i in range(20000)]
         side = [0.25 * math.sin(2.0 * math.pi * 1000 * i / IQ) for i in range(20000)]
-        pre_mono = F._preemphasis(mono, a)
         pre_side = F._preemphasis(side, a)
         subcarrier = max(abs(v) for v in pre_side)
         assert subcarrier > 0.1, (

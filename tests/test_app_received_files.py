@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import os
 import pathlib
-import time
 
 import pytest
 
@@ -53,7 +52,6 @@ def _isolated_downloads(tmp_path, monkeypatch):
     folder = tmp_path / "Downloads"
     folder.mkdir()
     monkeypatch.setattr(panel, "_in_thread", lambda work, done: done(work()))
-    import gi
     from gi.repository import GLib
     monkeypatch.setattr(GLib, "get_user_special_dir",
                         lambda _which: str(folder))

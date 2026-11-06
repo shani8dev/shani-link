@@ -13,7 +13,7 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Adw  # noqa: E402
 
-from _gui import needs_display, pump, texts  # noqa: E402
+from _gui import needs_display, pump  # noqa: E402
 
 pytestmark = needs_display
 

@@ -5,8 +5,6 @@ actions; Background is the switches the service reads. Driven with the engines
 stubbed at the names the pages call, so no radio, reader, IR device or bus is
 touched (conftest.py also points both buses nowhere).
 """
-import pytest
-
 import gi
 
 gi.require_version("Gtk", "4.0")
