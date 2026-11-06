@@ -3,13 +3,13 @@ Audio section of `wpctl status`. Taken as they were from Shani Chronoa
 (pipewire.py, skills/audio_output.py), where they were tested."""
 from __future__ import annotations
 
-from typing import Optional
 import json
 import logging
+import re
 import shutil
 import subprocess
-from dataclasses import dataclass
-import re
+
+logger = logging.getLogger(__name__)
 
 _DUMP_TIMEOUT = 10
 WPCTL_TIMEOUT = 10
@@ -63,8 +63,8 @@ def echo_cancel_active() -> bool:
 
     Reported rather than enabled. PipeWire's `module-echo-cancel` is a SPA hook
     attached to a source node by a `filter-chain.conf.d` fragment, so it cannot
-    be switched on from here at runtime - only detected. See `audio.py`'s
-    `BargeInMonitor` for why that matters: with no AEC, continuous-VAD barge-in
+    be switched on from here at runtime - only detected. Shani Chronoa's
+    barge-in monitor is why that matters: with no AEC, continuous-VAD barge-in
     hears Chronoa's own playback and interrupts itself.
     """
     for props in _graph_nodes():
