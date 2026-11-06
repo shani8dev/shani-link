@@ -100,7 +100,10 @@ it connected so its own find-my-phone, music and camera buttons work here.
 ### Devices
 
 Paired devices at a glance; an Android phone on a USB cable; your phone on
-the same Wi-Fi with KDE Connect; and this screen shown on your phone.
+the same Wi-Fi with KDE Connect; and this screen shown on your phone. With
+nothing connected yet, the page says so and offers the one thing to do:
+
+![No phone connected yet](docs/screenshots/devices-empty.png)
 
 | Paired | Android |
 |---|---|
@@ -204,7 +207,7 @@ Chronoa keeps thin skills that call this package:
 - this computer's Bluetooth roles: a remote (BLE), music control (AVRCP), battery
 - pairing, and receiving files (OBEX); Android over adb; this screen on the phone
 - FM radio (an RTL-SDR, demodulated here), NFC tags, infrared remotes
-- the Android companion app (android/)
+- the Android companion app (android/chronoa-cast, now in this repo)
 
 The parts that hold a connection open (the line, the phone link, the watch, the
 Bluetooth roles, receiving files) run in the service; the rest is a library

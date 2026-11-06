@@ -3,7 +3,8 @@
 Android hands its screen only to an app the person allows (MediaProjection) -
 no Bluetooth profile and no browser can (measured: Chrome 154 on Android 10 has
 no getDisplayMedia even on a secure page; AOSP's Android 10 Bluetooth stack has
-no video profile). So the phone runs Chronoa Cast (android/chronoa-cast), which
+no video profile). So the phone runs Chronoa Cast, shipped from
+android/chronoa-cast in this repo, which
 encodes the screen as H.264 and writes it to this computer over an RFCOMM
 channel - no Wi-Fi, no network, no cable.
 
