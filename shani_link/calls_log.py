@@ -215,7 +215,14 @@ def describe(row: dict) -> str:
         what = "Missed"
     else:
         what = "Incoming" if row.get("direction") == "in" else "Outgoing"
-    bits = [what, LINE_NAMES.get(row.get("line", ""), row.get("line", "")),
+    line = row.get("line", "")
+    if str(line).startswith("sip-"):        # a SIP account's name, not its id ("sip-3f2a1b")
+        try:
+            from shani_link import sip_accounts
+            line = sip_accounts.name_for_line(line) or "SIP"
+        except Exception:  # noqa: BLE001 - a row outlives the account it was logged on
+            line = "SIP"
+    bits = [what, LINE_NAMES.get(line, line),
             time.strftime("%H:%M", time.localtime(row.get("when", 0)))]
     if not row.get("missed") and row.get("seconds"):
         bits.append(duration(row["seconds"]))

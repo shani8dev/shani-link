@@ -811,8 +811,16 @@ stackswitcher button {
         self.history = self.calls_history.body
         box.append(self.calls_history.box)
         self.calls_history.load()
+        from shani_link.app import sip_accounts_view
+        self.sip_accounts = sip_accounts_view.AccountsBox(self)
+        box.append(self.sip_accounts.box)
+        self.sip_accounts.reload()
         self._wire_landline_events()
         return outer
+
+    def reload_lines(self) -> None:
+        """The SIP accounts box asks the dial pad to look at its lines again."""
+        self._refresh_lines()
 
     # --- live landline call state ---------------------------------------------
     def _wire_landline_events(self) -> None:
@@ -1088,21 +1096,27 @@ stackswitcher button {
 
     def _refresh_lines(self) -> None:
         """Which lines this computer has, asked once when the dial pad is built
-        (and on Reload): the landline set up, a phone, a voice modem."""
+        (and on Reload): the landline set up, a phone, a voice modem, and any
+        SIP accounts - each one its own choice on the line picker."""
         def work():
             from shani_link import mm_voice
-            from shani_link.app import line as landline
-            return {"landline": landline.is_set_up(), "modem": mm_voice.available()}
+            from shani_link.app import line as landline, sip_client
+            return {"landline": landline.is_set_up(), "modem": mm_voice.available(),
+                    "sip": sip_client.accounts()}
 
         def done(result):
             if isinstance(result, Exception):
                 return
             self._has_modem = bool(result.get("modem"))
+            self._sip_accounts = result.get("sip") or []
             lines = [k for k, on in (("landline", result.get("landline")), ("phone", self._phone_line()),
                                      ("modem", self._has_modem)) if on]
+            from shani_link.app import sip_client
+            lines += [sip_client.line_id(a) for a in self._sip_accounts]
             self.lines = lines
             if getattr(self, "line_row", None) is not None:
                 self.line_row.set_visible(len(lines) > 1)
+            self._rebuild_line_choices()
             hint = (self.IPHONE_HINT if getattr(self, "_iphone", False) and self._phone_up()
                     else self.NO_LINE_HINT)
             hints = (hint, self.NO_LINE_HINT, self.IPHONE_HINT)
@@ -1112,8 +1126,28 @@ stackswitcher button {
                 self.call_note.set_text("")
             self.line_choice.set_tooltip_text(
                 "Automatic: the landline when it is connected, else your phone"
-                + ("; this computer's mobile modem is there too" if self._has_modem else ""))
+                + ("; this computer's mobile modem is there too" if self._has_modem else "")
+                + ("; SIP accounts are there too" if self._sip_accounts else ""))
         _in_thread(work, done)
+
+    def _rebuild_line_choices(self) -> None:
+        """The line picker's choices: the usual lines, then one per SIP account."""
+        choice = getattr(self, "line_choice", None)
+        if choice is None:
+            return
+        from shani_link.app import sip_client
+        ids = [k for k, _n in calls_view.LINE_CHOICES] + \
+              [sip_client.line_id(a) for a in getattr(self, "_sip_accounts", [])]
+        names = [n for _k, n in calls_view.LINE_CHOICES] + \
+                [str(a.get("name") or a.get("username") or "SIP account")
+                 for a in getattr(self, "_sip_accounts", [])]
+        if ids == getattr(self, "line_ids", None):
+            return
+        selected = self.selected_line()
+        self.line_ids = ids
+        choice.set_model(Gtk.StringList.new(names))
+        if selected in ids:
+            choice.set_selected(ids.index(selected))
 
     def _key_pressed(self, key: str) -> None:
         """A keypad press: a tone down the live call, or a digit into the field.
@@ -1121,6 +1155,12 @@ stackswitcher button {
         During an active landline call the keypad is the phone's keypad - it
         sends DTMF so you can work a menu ("press 1 for ...") - not a text field.
         """
+        if getattr(self, "_sip_call", ""):
+            # the SIP account's live call: the keypad keys tones into it
+            from shani_link.app import sip_client
+            _in_thread(lambda: sip_client.dtmf(self._sip_call, key), lambda _r: None)
+            self.number.set_text(self.number.get_text() + key)
+            return
         if getattr(self, "_modem_call", ""):
             # the modem's live call: the keypad keys tones into it
             from shani_link import mm_voice
@@ -1178,7 +1218,8 @@ stackswitcher button {
         """Call `number` on `line` (a history row's), else the line chosen on the
         dial pad; "auto" is the landline when it is up, else the phone."""
         number = (number or "").strip()
-        line = line if line in ("landline", "phone", "modem") else self.selected_line()
+        line = line if line in ("landline", "phone", "modem") or str(line).startswith("sip-") \
+            else self.selected_line()
         if not number:
             self.call_note.set_text("Type a number first.")
             return
@@ -1189,6 +1230,17 @@ stackswitcher button {
                 self.call_note.set_text(f"No contact matching '{number}'.")
                 return
             number = resolved
+        if str(line).startswith("sip-"):
+            # An internet SIP account: the service dials it, like the landline.
+            from shani_link.app import sip_client
+            try:
+                said = sip_client.dial(line, number)
+                self._sip_call = line
+                self._refresh_incall()
+                self.call_note.set_text(f"{said} Hang up here when you are done.")
+            except RuntimeError as exc:
+                self.call_note.set_text(f"Not called: {exc}")
+            return
         if line == "modem":
             self.call_modem(number)
             return
@@ -1373,6 +1425,22 @@ stackswitcher button {
             except RuntimeError as exc:
                 self.call_note.set_text(str(exc))
             self._refresh_call_controls()
+            return
+        # A SIP account's call is answered and ended on that account, like
+        # the landline's; the account is the one this page dialled on, or the
+        # one picked on the dial pad when its call rings the notification.
+        sip_line = getattr(self, "_sip_call", "") or \
+            (self.selected_line() if str(self.selected_line()).startswith("sip-") else "")
+        if sip_line and action in ("answer", "hangup"):
+            from shani_link.app import sip_client
+            try:
+                (sip_client.answer if action == "answer" else sip_client.hangup)(sip_line)
+                if action == "hangup":
+                    self._sip_call = ""
+                self._refresh_incall()
+                self.call_note.set_text("Answered." if action == "answer" else "Hung up.")
+            except RuntimeError as exc:
+                self.call_note.set_text(str(exc))
             return
         if getattr(self, "_modem_call", "") or (action == "answer" and getattr(self, "_has_modem", False)
                                                 and not has_call):

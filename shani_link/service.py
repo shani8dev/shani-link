@@ -123,6 +123,10 @@ CALLS_XML = f"""
     <method name="RecentCalls"><arg name="limit" type="i"/><arg type="s" direction="out"/></method>
     <method name="DeleteCall"><arg name="id" type="s"/><arg type="b" direction="out"/></method>
     <method name="ClearCalls"/>
+    <method name="SipAccounts"><arg type="s" direction="out"/></method>
+    <method name="SipAccountAdd"><arg name="fields_json" type="s"/><arg type="s" direction="out"/></method>
+    <method name="SipAccountUpdate"><arg name="id" type="s"/><arg name="fields_json" type="s"/><arg type="s" direction="out"/></method>
+    <method name="SipAccountRemove"><arg name="id" type="s"/><arg type="b" direction="out"/></method>
     <signal name="CallLogged"><arg name="row_json" type="s"/></signal>
   </interface>
 </node>
@@ -191,6 +195,8 @@ class Service:
         self.video = VideoFanout(os.path.join(runtime, "shani-link", "video.sock"))
         landline.video_sink(self.video.frame)
         landline.listen(self._on_event)
+        from shani_link import sip_accounts
+        sip_accounts.listen(lambda kind, **info: self.device_event("sip", kind, **info))
         node = Gio.DBusNodeInfo.new_for_xml(XML)
         conn.register_object(PATH, node.interfaces[0], self._call, None, None)
         for xml, path, handler in ((CONTACTS_XML, CONTACTS_PATH, self._contacts_call),
@@ -258,6 +264,18 @@ class Service:
             if method == "ClearCalls":
                 calls_log.clear()
                 return None
+            if method == "SipAccounts":
+                from shani_link import sip_accounts
+                return GLib.Variant("(s)", (_json(sip_accounts.accounts()),))
+            if method == "SipAccountAdd":
+                from shani_link import sip_accounts
+                return GLib.Variant("(s)", (_json(sip_accounts.add_account(json.loads(a[0] or "{}"))),))
+            if method == "SipAccountUpdate":
+                from shani_link import sip_accounts
+                return GLib.Variant("(s)", (_json(sip_accounts.update_account(a[0], json.loads(a[1] or "{}"))),))
+            if method == "SipAccountRemove":
+                from shani_link import sip_accounts
+                return b(sip_accounts.remove_account(a[0]))
             raise ValueError(f"no method {method}")
         self._answer(invocation, run)
 
@@ -410,6 +428,8 @@ def main() -> None:
     def acquired(conn, _name):
         holder["service"] = Service(conn)
         landline.start()          # nothing happens unless the line is set up and on
+        from shani_link import sip_accounts
+        sip_accounts.start_all()  # every enabled SIP account registers itself, quietly
         if not os.environ.get("SHANI_LINK_NO_DEVICES"):      # the tests' private bus has no BlueZ
             holder["service"].start_devices()
         logger.info("on the session bus as %s", BUS_NAME)

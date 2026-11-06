@@ -142,3 +142,24 @@ def test_recent_calls_are_named_from_the_phones_cached_book(tmp_path, monkeypatc
     out = on_bus(_gdbus("/dev/shani/Link/Calls", "RecentCalls", "10"), tmp_path)
     assert '"name": "Amma"' in out or '\\"name\\": \\"Amma\\"' in out, out
     assert calls_log.rows()[0]["name"] == "", "named when read, the file left as it was"
+
+
+
+def test_sip_accounts_are_managed_over_the_bus_without_passwords(tmp_path):
+    """Accounts are added, listed and removed over D-Bus; no password ever
+    comes back, and a saved account is a line of its own."""
+    calls = "/dev/shani/Link/Calls"
+    fields = '\'{"name": "Office SIP", "username": "bob", "password": "shh-secret", "domain": "127.0.0.1", "port": 9, "transport": "udp"}\''
+    script = (_gdbus(calls, "SipAccounts")
+              + _gdbus(calls, "SipAccountAdd", fields)
+              + _gdbus(calls, "SipAccounts")
+              + _gdbus(calls, "Lines")
+              # the account's id, out of the list answer, then remove it again
+              + 'id=$(gdbus call --session -d dev.shani.Link -o /dev/shani/Link/Calls -m dev.shani.Link.Calls.SipAccounts | grep -o \'"id": "[a-f0-9]*"\' | head -1 | cut -d\\" -f4)\n'
+              + _gdbus(calls, "SipAccountRemove", '"$id"')
+              + _gdbus(calls, "SipAccounts"))
+    out = on_bus(script, tmp_path)
+    assert "('[]',)" in out, out
+    assert "Office SIP" in out and "shh-secret" not in out, out     # saved, password stays home
+    assert '"id": "sip-' in out.replace('\\"', '"'), out          # the line picker sees it
+    assert "(true,)" in out, out

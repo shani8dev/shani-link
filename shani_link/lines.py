@@ -49,21 +49,40 @@ def available() -> List[dict]:
     from shani_link import mm_voice
     if mm_voice.available():
         out.append({"id": "modem", "name": NAMES["modem"], "ready": True})
+    from shani_link import sip_accounts
+    for saved in sip_accounts.accounts():
+        line = sip_accounts.line_id(saved)
+        out.append({"id": line, "name": saved.get("name") or saved.get("username") or "SIP",
+                    "ready": sip_accounts.ready(line)})
     return out
+
+
+def _name(line: str) -> str:
+    name = NAMES.get(line)
+    if name:
+        return name
+    from shani_link import sip_accounts
+    found = sip_accounts.name_for_line(line)
+    if found:
+        return found
+    raise ValueError(f"there is no line called {line!r} (landline, phone, modem or a SIP account)")
 
 
 def pick(line: str = "") -> str:
     """`line` when it is ready; with none named, the first that is ready."""
-    ready = [l["id"] for l in available() if l["ready"]]
+    lines = available()
+    ready = [l["id"] for l in lines if l["ready"]]
     if line:
-        if line not in NAMES:
-            raise ValueError(f"there is no line called {line!r} (landline, phone or modem)")
-        if line not in ready:
-            raise RuntimeError(f"the {NAMES[line].lower()} line is not connected")
-        return line
+        if line in NAMES:
+            if line not in ready:
+                raise RuntimeError(f"the {NAMES[line].lower()} line is not connected")
+            return line
+        if line not in {l["id"] for l in lines}:
+            raise ValueError(f"there is no line called {line!r} (landline, phone, modem or a SIP account)")
+        raise RuntimeError(f"the {_name(line).lower()} line is not connected")
     if not ready:
         raise RuntimeError("no line is connected: set up the landline, connect a phone, "
-                           "or use a computer with a mobile modem")
+                           "use a computer with a mobile modem, or add a SIP account")
     return ready[0]
 
 
@@ -72,6 +91,9 @@ def dial(line: str, number: str) -> str:
     line = pick(line)
     if line == "landline":
         return f"Calling {_landline().dial(number)} on the landline."
+    if line.startswith("sip-"):
+        from shani_link import sip_accounts
+        return sip_accounts.dial(line, number)
     if line == "phone":
         from shani_link import bt_telephony
         return bt_telephony._run({"action": "dial", "number": number})
@@ -81,6 +103,9 @@ def dial(line: str, number: str) -> str:
 
 
 def answer(line: str) -> bool:
+    if line.startswith("sip-"):
+        from shani_link import sip_accounts
+        return sip_accounts.answer(line)
     if line == "landline":
         _landline().answer()
         return True
@@ -92,6 +117,9 @@ def answer(line: str) -> bool:
 
 
 def hangup(line: str) -> bool:
+    if line.startswith("sip-"):
+        from shani_link import sip_accounts
+        return sip_accounts.hangup(line)
     if line == "landline":
         _landline().hangup()
         return True
@@ -103,6 +131,9 @@ def hangup(line: str) -> bool:
 
 
 def dtmf(line: str, digit: str) -> bool:
+    if line.startswith("sip-"):
+        from shani_link import sip_accounts
+        return sip_accounts.dtmf(line, digit)
     if line == "landline":
         return bool(_landline().dtmf(digit))
     if line == "modem":
