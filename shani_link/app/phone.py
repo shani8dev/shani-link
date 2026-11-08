@@ -235,6 +235,11 @@ class PhonePanel:
         if stack is not None:
             stack.set_visible_child_name(name)
 
+    def add_tab(self, name: str) -> None:
+        """A tab the window asked for by name: URLs from `shani-link-app
+        --page=messages` & friends arrive here. Tab names are already
+        registered, so nothing is built twice."""
+
     def message(self, number: str) -> None:
         """The Messages tab, addressed to `number`; nothing is sent until Send."""
         self.show_tab("messages")

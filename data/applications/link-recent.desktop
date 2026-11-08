@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Shani Link Recent calls
+GenericName=Recent calls
+Comment=Who called and who you called
+Exec=shani-link-app --page=recent
+Icon=phone-yes
+Terminal=false
+Categories=Network;Telephony;
+StartupNotify=true

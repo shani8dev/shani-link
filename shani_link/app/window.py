@@ -104,6 +104,11 @@ ALIASES = {
     "phone_link": ("devices", "phone_link"), "screen_share": ("devices", "screen"),
     "screen": ("devices", "screen"), "paired": ("devices", "paired"),
     "fm_radio": ("radio", ""), "ir_remote": ("remote", ""),
+    # The three phone tabs get deep links of their own, so the shell's
+    # launcher can open Messages / Recent calls / Contacts straight onto
+    # the right tab (the phone page's stack has those names).
+    "messages": ("phone", "messages"), "recent": ("phone", "calls"),
+    "calls": ("phone", "calls"), "contacts": ("phone", "contacts"),
 }
 
 

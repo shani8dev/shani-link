@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Shani Link Contacts
+GenericName=Contacts
+Comment=Address book: your contacts and your phone's
+Exec=shani-link-app --page=contacts
+Icon=address-book
+Terminal=false
+Categories=Utility;Contacts;
+StartupNotify=true
+Keywords=phone;call;contacts;address book;dialer;

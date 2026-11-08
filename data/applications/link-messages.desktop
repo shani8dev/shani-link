@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Shani Link Messages
+GenericName=Messages
+Comment=Send and read texts through your phone
+Exec=shani-link-app --page=messages
+Icon=mail-unread
+Terminal=false
+Categories=Network;Telephony;
+StartupNotify=true

@@ -1,0 +1,28 @@
+name: CI
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  lint:
+    uses: shani8dev/shani-ci-commons/.github/workflows/lint.yml@main
+    with:
+      language: python
+  test:
+    uses: shani8dev/shani-ci-commons/.github/workflows/test.yml@main
+    with:
+      language: python
+      apt-packages: python3-gi gir1.2-gtk-4.0 gir1.2-adw-1 libglib2.0-bin xvfb bluez
+      system-site-packages: true
+      test-command: PYTHONDONTWRITEBYTECODE=1 xvfb-run -a python3 -m pytest tests/ -q -p no:cacheprovider
+    needs: lint
+  security:
+    name: Security
+    uses: shani8dev/shani-ci-commons/.github/workflows/security.yml@main
+    with:
+      scan-type: secrets
+    needs: lint
