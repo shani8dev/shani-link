@@ -35,7 +35,7 @@ ELSEWHERE = {"landline-enabled"}
 GROUPS = (
     ("Phone", ("bluetooth-call-enabled", "phone-control-enabled",
                "phone-messages-read-enabled", "phone-messages-send-enabled",
-               "phone-remote-enabled", "modem-call-enabled")),
+               "phone-remote-enabled", "modem-call-enabled", "phone-lan-receive-enabled")),
     ("Watch", ("bluetooth-gatt-enabled", "watch-companion-enabled",
                "watch-nowplaying-enabled", "watch-weather-enabled")),
     ("Music", ("bluetooth-media-remote-enabled",)),

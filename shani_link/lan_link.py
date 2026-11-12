@@ -25,7 +25,16 @@ over a real socket: `identity_packet`'s field order, `parse_identity`'s
 refusal of everything that is not an identity, our own broadcast being filtered
 out of discovery, and the stability of the device id.
 
-**Not verified**: any plugin packet after pairing. The capability *list* the
+**Files, both ways (2026-11-12): verified against `tests/fake_kdeconnect.py` on
+real sockets, not yet against a real phone.** `send_file` offers on a payload
+port (1739-1764) and is the TLS server of the transfer; `Receiver` takes the
+paired phone's share requests and pulls each file as the TLS client - the
+roles kdeconnect-kde's upload and download jobs take. The fake phone was
+written from the same reading, so a real phone is still the proof; before
+this, `send_file` sent plain bytes from an ephemeral port and waited for a
+reply that a phone never sends (`tests/test_lan_files.py` fails against it).
+
+**Not verified**: any other plugin packet after pairing. The capability *list* the
 phone advertises is real, and it arrives with the discovery datagram - the
 official field order puts `incomingCapabilities`/`outgoingCapabilities` in the
 plaintext identity, and `parse_identity` returns them, so
@@ -96,6 +105,11 @@ UDP_PORT = 1716
 #: The control channel and the file-transfer side channels. From the same
 #: header: MIN_TCP_PORT 1716, MAX_TCP_PORT 1764.
 MIN_TCP_PORT, MAX_TCP_PORT = 1716, 1764
+#: `lanlinkprovider.h`: MIN_PAYLOAD_PORT 1739, MAX_PAYLOAD_PORT 1764. A file is
+#: offered on one of these - inside firewalld's own `kdeconnect` service
+#: (1714-1764), so a firewall opened for KDE Connect lets the peer pull it; an
+#: ephemeral port (what this did before) is outside every such rule.
+MIN_PAYLOAD_PORT, MAX_PAYLOAD_PORT = 1739, 1764
 
 #: mDNS service type. From `mdnsdiscovery.h`; this is the mode that survives a
 #: network with broadcast dropped.
@@ -753,6 +767,36 @@ class Link:
         return [l for l in whole.split("\n") if l.strip().startswith("{")] if whole else []
 
 
+def _payload_listener() -> "tuple[Optional[socket.socket], int]":
+    """A listening socket on the first free payload port, or (None, 0)."""
+    for port in range(MIN_PAYLOAD_PORT, MAX_PAYLOAD_PORT + 1):
+        listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            listener.bind(("", port))
+            listener.listen(1)
+            return listener, port
+        except OSError:
+            listener.close()
+    return None, 0
+
+
+def _client_context():
+    """Our identity, on the TLS *client* side: a download (the receiver dials the
+    payload port and is the client), and a link the peer opened to us (the TCP
+    receiver is the TLS client - the same rule as `Link`, seen from the other end)."""
+    import ssl
+    cert, key = _our_certificate()
+    if cert is None:
+        raise RuntimeError("no TLS identity for this computer")
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE
+    context.load_cert_chain(str(cert), str(key))
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    return context
+
+
 def send_file(host: str, path, tcp_port: int = UDP_PORT,
               timeout: float = 120.0) -> "tuple[bool, str]":
     """Push a file to a paired peer. `(sent, why-not)`.
@@ -763,15 +807,22 @@ def send_file(host: str, path, tcp_port: int = UDP_PORT,
         {"type": "kdeconnect.share.request", "body": {"filename": "x.png"},
          "payloadSize": 882, "payloadTransferInfo": {"port": 1739}}
 
-    and `kdeconnect-nx` opens the TCP side with `create_tcp_server_socket` over
-    1716-1764 - so we listen, name our port in the packet, and the peer dials in
-    and pulls the bytes. Sending it to a port *we* chose is the same number, but
-    the roles are the opposite of the request/reply pattern every other plugin
-    here uses, which is why this is spelled out.
+    and the peer dials in and pulls the bytes. Three things about that were
+    wrong here until 2026-11-12, each enough on its own for a real phone to
+    get nothing (none had been run against one):
+
+    1. **The bytes go inside TLS, and we are its server.** kdeconnect-kde's
+       upload job calls `startServerEncryption()` on the connection the peer
+       made; a download is `startClientEncryption()`. Plain bytes are a TLS
+       record the phone cannot parse.
+    2. **The port is a payload port (1739-1764)**, not an ephemeral one:
+       that is what firewalld's `kdeconnect` service opens.
+    3. **The peer does not answer a share request.** It connects and pulls.
+       Waiting for a reply packet reported "did not answer" for a transfer
+       that worked; what counts now is the bytes delivered.
 
     This is also what sends an **APK** to a phone - the file is just bytes, and
-    Android offers to install whatever arrives. It is not special-cased: a
-    picture and an installer travel the same way.
+    Android offers to install whatever arrives. It is not special-cased.
     """
     import pathlib
 
@@ -782,28 +833,20 @@ def send_file(host: str, path, tcp_port: int = UDP_PORT,
     if size <= 0:
         return False, f"{target.name} is empty, and an empty file is not worth sending"
 
-    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    try:
-        listener.bind(("", 0))
-        listener.listen(1)
-        port = listener.getsockname()[1]
-    except OSError as exc:
-        listener.close()
-        return False, f"could not open a port to send from ({exc})"
+    listener, port = _payload_listener()
+    if listener is None:
+        return False, f"no free port between {MIN_PAYLOAD_PORT} and {MAX_PAYLOAD_PORT} to send from"
 
-    # **The port the caller names, not a fixed one.** The
-    # first version dialled UDP_PORT here while `send_file` was the only caller
-    # that knew better, so a peer on any other control port - including a test's
-    # fake one - came back as `ConnectionRefusedError` rather than as "the wrong
-    # port", which reads as the peer being down.
     link, why = _link(host, timeout=timeout, tcp_port=tcp_port)
     if link is None:
         listener.close()
         return False, why
 
-    accepted = threading.Event()
+    result: dict = {}
     try:
+        # the peer dials in while the request is in flight: the accept runs beside it
+        waiter = threading.Thread(target=_accept_and_send, args=(listener, target, size, result), daemon=True)
+        waiter.start()
         link.send({
             "id": int(time.time() * 1000),
             "type": "kdeconnect.share.request",
@@ -811,21 +854,14 @@ def send_file(host: str, path, tcp_port: int = UDP_PORT,
             "payloadSize": size,
             "payloadTransferInfo": {"port": port},
         })
-        # The peer dials in *while* our request is in flight, so the accept runs
-        # beside it rather than after it - otherwise both sides wait and nothing
-        # happens, which reads as a timeout rather than as a deadlock.
-        waiter = threading.Thread(target=_accept_and_send,
-                                  args=(listener, target, size, accepted),
-                                  daemon=True)
-        waiter.start()
-        reply = link.reply_packet(timeout=20)
-        if reply is None:
-            return False, ("the device did not answer the share request - it may "
-                          "not be paired, or the file may be refused")
-        if reply.get("type") == "kdeconnect.pair":
-            return False, ("the device says we are not paired, so it will not "
-                          "take a file")
-        return True, f"{target.name} ({_human(size)}) was offered to the device"
+        waiter.join(timeout)
+        sent = result.get("sent", 0)
+        if sent == size:
+            return True, f"{target.name} ({_human(size)}) was sent"
+        if not result.get("connected"):
+            return False, ("the device did not come for the file - it may not be "
+                           "paired, or a firewall between may block 1739-1764")
+        return False, f"the device stopped taking {target.name} after {_human(sent)} ({result.get('error', 'closed')})"
     except Exception as exc:  # noqa: BLE001 - a reason, never a traceback
         return False, f"{type(exc).__name__}: {exc}"
     finally:
@@ -833,31 +869,168 @@ def send_file(host: str, path, tcp_port: int = UDP_PORT,
         listener.close()
 
 
-def _accept_and_send(listener: socket.socket, target, size: int, accepted) -> None:
-    """Take the peer's connection and stream the file into it."""
+def _accept_and_send(listener: socket.socket, target, size: int, result: dict) -> None:
+    """Take the peer's connection, become its TLS server, stream the file."""
+    import ssl
     try:
         listener.settimeout(30)
         conn, _address = listener.accept()
     except (OSError, socket.timeout):
         return
-    accepted.set()
+    result["connected"] = True
+    tls = None
     try:
         conn.settimeout(60)
+        tls = Link._context().wrap_socket(conn, server_side=True)
+        sent = 0
         with open(target, "rb") as handle:
-            sent = 0
             while sent < size:
                 chunk = handle.read(1 << 16)
                 if not chunk:
                     break
-                conn.sendall(chunk)
+                tls.sendall(chunk)
                 sent += len(chunk)
-    except OSError as exc:
+                result["sent"] = sent
+    except (OSError, ssl.SSLError) as exc:
+        result["error"] = str(exc)
         logger.info("the peer stopped taking the file: %s", exc)
     finally:
         try:
-            conn.close()
+            (tls or conn).close()
         except OSError:
             pass
+
+
+# ---- receiving: the paired phone sends to us -----------------------------------------------
+def receive_payload(host: str, port: int, size: int, folder, name: str,
+                    timeout: float = 60.0) -> "tuple[bool, str]":
+    """Dial the peer's payload port as the TLS client and take `size` bytes into
+    `folder`, under `name`'s last part (never a path), beside what is there."""
+    import pathlib
+    import ssl
+    from shani_link.obex_receive import free_path, safe_name   # the Bluetooth receiver's rules, the same here
+    folder = pathlib.Path(folder)
+    folder.mkdir(parents=True, exist_ok=True)
+    target = pathlib.Path(free_path(str(folder), safe_name(name)))
+    part = target.with_name(target.name + ".part")
+    try:
+        raw = socket.create_connection((host, port), timeout=timeout)
+        tls = _client_context().wrap_socket(raw, server_hostname=None)
+        got = 0
+        with open(part, "wb") as out:
+            while got < size:
+                chunk = tls.recv(min(1 << 16, size - got))
+                if not chunk:
+                    break
+                out.write(chunk)
+                got += len(chunk)
+        tls.close()
+    except (OSError, ssl.SSLError) as exc:
+        part.unlink(missing_ok=True)
+        return False, f"{type(exc).__name__}: {exc}"
+    if got != size:
+        part.unlink(missing_ok=True)
+        return False, f"the device sent {_human(got)} of {_human(size)}"
+    part.rename(target)
+    return True, str(target)
+
+
+class Receiver:
+    """What the paired phone sends us, while the person has it on.
+
+    Listens on the control port; a connection is accepted only from the paired
+    device (its plaintext identity must name the pinned id, and so must the one
+    inside TLS), and only `kdeconnect.share.request` is acted on: the file is
+    pulled from the payload port it names, into `folder`, and `on_file(path)` is
+    told. Paired is trusted, as KDE Connect does - a file from the paired phone
+    is taken without asking - and `on_file` is how the person hears of it.
+    """
+
+    def __init__(self, folder, on_file, port: int = UDP_PORT, paired_id=None) -> None:
+        self.folder = folder
+        self.on_file = on_file
+        self.port = port
+        self.paired_id = paired_id
+        self._listener: "Optional[socket.socket]" = None
+        self._stop = threading.Event()
+
+    def start(self) -> "tuple[bool, str]":
+        if self._listener is not None:
+            return True, ""
+        listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            listener.bind(("", self.port))
+            listener.listen(4)
+        except OSError as exc:
+            listener.close()
+            return False, f"port {self.port}: {exc.strerror}"
+        self._listener = listener
+        self._stop.clear()
+        threading.Thread(target=self._accept, daemon=True).start()
+        return True, ""
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._listener is not None:
+            try:
+                self._listener.close()
+            except OSError:
+                pass
+            self._listener = None
+
+    def _accept(self) -> None:
+        while not self._stop.is_set() and self._listener is not None:
+            try:
+                raw, address = self._listener.accept()
+            except OSError:
+                return
+            threading.Thread(target=self._serve, args=(raw, address[0]), daemon=True).start()
+
+    def _serve(self, raw: socket.socket, host: str) -> None:
+        import ssl
+        paired = self.paired_id if self.paired_id is not None else paired_device().get("deviceId")
+        try:
+            raw.settimeout(20)
+            line = b""
+            while not line.endswith(b"\n") and len(line) < MAX_LINE_BYTES:
+                chunk = raw.recv(1)
+                if not chunk:
+                    return
+                line += chunk
+            body = (json.loads(line) or {}).get("body") or {}
+            if not paired or body.get("deviceId") != paired:
+                logger.info("a device that is not the paired phone tried to connect: %s", host)
+                return
+            tls = _client_context().wrap_socket(raw, server_hostname=None)
+            stream = tls.makefile("rwb")
+            stream.write((json.dumps(identity_packet(name=_hostname(), device_type="desktop"),
+                                     separators=(", ", ": ")) + "\n").encode())
+            stream.flush()
+            for raw_line in stream:
+                if self._stop.is_set():
+                    break
+                try:
+                    packet = json.loads(raw_line)
+                except ValueError:
+                    continue
+                kind = packet.get("type")
+                if kind == IDENTITY_TYPE:
+                    if (packet.get("body") or {}).get("deviceId") != paired:
+                        return                        # the TLS identity must be the same phone
+                    continue
+                if kind == "kdeconnect.share.request" and packet.get("payloadTransferInfo"):
+                    name = (packet.get("body") or {}).get("filename") or "file"
+                    ok, where = receive_payload(host, int(packet["payloadTransferInfo"]["port"]),
+                                                int(packet.get("payloadSize") or 0), self.folder, name)
+                    self.on_file(where if ok else "", "" if ok else where)
+        except (OSError, ValueError, ssl.SSLError) as exc:
+            logger.info("the phone's link ended: %s", exc)
+        finally:
+            try:
+                raw.close()
+            except OSError:
+                pass
 
 
 def _human(size: int) -> str:

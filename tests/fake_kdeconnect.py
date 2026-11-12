@@ -59,6 +59,8 @@ class FakePhone:
         self.delay = delay
         self.identity_inside_tls = identity_inside_tls
         self.received: "list[dict]" = []
+        #: files the computer offered (kdeconnect.share.request) and we pulled: name -> bytes
+        self.files: "dict[str, bytes]" = {}
         self.plain_identities: "list[dict]" = []
         self.links = 0
         self._outbox: "list[dict]" = []
@@ -128,6 +130,9 @@ class FakePhone:
             for raw_line in stream:
                 packet = json.loads(raw_line)
                 self.received.append(packet)
+                if packet.get("type") == "kdeconnect.share.request" and packet.get("payloadTransferInfo"):
+                    # the phone pulls the bytes: it dials the payload port and is the TLS client
+                    threading.Thread(target=self._pull, args=(packet,), daemon=True).start()
                 if packet.get("type") == "kdeconnect.pair" and packet["body"].get("pair"):
                     if any(p.get("type") == "kdeconnect.pair" for p in self.received[:-1]):
                         continue          # the computer's confirmation: done
@@ -143,6 +148,64 @@ class FakePhone:
                 tls.close()
             except OSError:
                 pass
+
+    def _pull(self, packet: dict) -> None:
+        size = int(packet.get("payloadSize") or 0)
+        try:
+            raw = socket.create_connection(("127.0.0.1", packet["payloadTransferInfo"]["port"]), timeout=10)
+            tls = self._ctx.wrap_socket(raw, server_side=False)
+            data = b""
+            while len(data) < size:
+                chunk = tls.recv(65536)
+                if not chunk:
+                    break
+                data += chunk
+            tls.close()
+            self.files[packet["body"]["filename"]] = data
+        except (OSError, ssl.SSLError) as exc:
+            self.files[packet["body"]["filename"]] = repr(exc).encode()
+
+    def push(self, port: int, filename: str, data: bytes, device_id: "str | None" = None) -> None:
+        """Send the computer a file, the way the phone does: open a link to its
+        control port (plaintext identity, then TLS with the phone as server),
+        offer the file, and serve its bytes on a payload port as the TLS server."""
+        server_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        server_ctx.load_cert_chain(*_cert(self._dir, self.device_id))
+        payload = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        payload.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        payload.bind(("127.0.0.1", 0))
+        payload.listen(1)
+
+        def serve_payload() -> None:
+            try:
+                conn, _ = payload.accept()
+                tls = server_ctx.wrap_socket(conn, server_side=True)
+                tls.sendall(data)
+                tls.close()
+            except (OSError, ssl.SSLError):
+                pass
+            finally:
+                payload.close()
+
+        threading.Thread(target=serve_payload, daemon=True).start()
+        ident = _identity(device_id=device_id or self.device_id)
+        raw = socket.create_connection(("127.0.0.1", port), timeout=10)
+        raw.sendall((json.dumps(ident) + "\n").encode())
+        try:
+            tls = server_ctx.wrap_socket(raw, server_side=True)
+        except (OSError, ssl.SSLError):
+            raw.close()
+            return
+        stream = tls.makefile("rwb")
+        for packet in (ident, {"id": 3, "type": "kdeconnect.share.request", "body": {"filename": filename},
+                               "payloadSize": len(data), "payloadTransferInfo": {"port": payload.getsockname()[1]}}):
+            stream.write((json.dumps(packet) + "\n").encode())
+            stream.flush()
+        time.sleep(1.5)
+        try:
+            tls.close()
+        except OSError:
+            pass
 
     def got(self, kind: str) -> "list[dict]":
         return [p for p in self.received if p.get("type") == kind]

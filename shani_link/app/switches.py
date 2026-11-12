@@ -57,6 +57,9 @@ LABELS = {
         "Calls on this computer's mobile modem",
         "Ring here when the SIM in this computer's own modem gets a call (only "
         "computers with a mobile modem that can make calls)"),
+    "phone-lan-receive-enabled": (
+        "Receive files from your phone over Wi-Fi",
+        "Your paired phone can share files to this computer (KDE Connect); opens its ports in the firewall until you turn this off or restart"),
     "bluetooth-media-remote-enabled": (
         "Media keys from Bluetooth",
         "Headphones' and car kits' play/pause and skip buttons control music here"),

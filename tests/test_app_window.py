@@ -131,7 +131,7 @@ def test_pages_meet_an_empty_machine_with_its_reason(built):
     # only the switches that are on unless turned off: media keys, and the
     # computer's own modem ringing (which never rings without a voice modem)
     assert pages["background"]["status"] == "ok"
-    assert any("2 of 11 on" in t for t in pages["background"]["texts"]), pages["background"]["texts"]
+    assert any("2 of 12 on" in t for t in pages["background"]["texts"]), pages["background"]["texts"]   # 12: + receive files over Wi-Fi (off)
 
 
 @needs_display
