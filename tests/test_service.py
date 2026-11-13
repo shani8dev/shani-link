@@ -71,6 +71,33 @@ def _gdbus(path, method, *args):
     return f"gdbus call --session -d dev.shani.Link -o {path} -m {iface}.{method} " + " ".join(args) + "\n"
 
 
+def test_the_phones_own_reads_cross_the_bus(tmp_path):
+    """Notifications, line, Wi-Fi and temperatures are adb reads, not Bluetooth:
+    the Android page has no shell by design, so this interface is where they
+    are reachable. With no phone on the bus they answer as an error a person
+    can read, not a crash."""
+    script = (_gdbus("/dev/shani/Link/Phone", "Line")
+              + _gdbus("/dev/shani/Link/Phone", "Wifi")
+              + _gdbus("/dev/shani/Link/Phone", "Thermal")
+              + _gdbus("/dev/shani/Link/Phone", "Notifications", "5"))
+    out = on_bus(script, tmp_path)
+    assert "dev.shani.Link.Error" in out, out
+    assert "no Android device" in out or "adb" in out, out
+    assert "Traceback" not in out, out
+
+
+def test_the_cable_and_wifi_roads_cross_the_bus(tmp_path):
+    """USB tethering needs no pairing and no address; the state is JSON, the
+    Wi-Fi answer a sentence, and neither invents a phone that is not there."""
+    script = (_gdbus("/dev/shani/Link/Phone", "UsbTetherState")
+              + _gdbus("/dev/shani/Link/Phone", "WifiTether")
+              + _gdbus("/dev/shani/Link/Phone", "UsbTether", "false"))
+    out = on_bus(script, tmp_path)
+    assert '"device": ""' in out or '\\"device\\": \\"\\"' in out, out
+    assert "Wi-Fi" in out, out
+    assert "USB tethering" in out, out
+
+
 def test_contacts_are_searched_and_numbers_named_over_the_bus(tmp_path, monkeypatch):
     """The shell's dialer and Chronoa name a number the same way the app does."""
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))

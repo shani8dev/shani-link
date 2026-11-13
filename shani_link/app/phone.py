@@ -392,13 +392,15 @@ stackswitcher button {
             iphone = _is_iphone(dev, which)
             target = _tether_target(dev, which)
             internet = None
-            if target is not None:
-                from shani_link import tether
+            from shani_link import tether
+            hotspot = ""
+            if tether.available():
                 try:
-                    internet = tether.state(*target) if tether.available() else None
+                    internet = tether.state(*target) if target is not None else None
                 except tether.TetherError:
                     internet = None
-            return dev, battery, which, (target, internet), iphone
+                hotspot = tether.hotspot()
+            return dev, battery, which, (target, internet), iphone, hotspot
 
         def done(result):
             self._iphone = False
@@ -413,7 +415,7 @@ stackswitcher button {
                 self.set_status(common.STATUS_ATTENTION, "Could not reach your phone", str(result))
                 self._phone_changed()
                 return
-            dev, battery, which, (target, internet), iphone = result
+            dev, battery, which, (target, internet), iphone, hotspot = result
             self.device = dev
             self._iphone = bool(iphone)
             self._phone_bluetooth = str(which) == "bluetooth"
@@ -434,6 +436,8 @@ stackswitcher button {
                 self.status_box.append(self._iphone_row(dev))
             if internet is not None:
                 self.status_box.append(self._internet_row(target, internet))
+            if hotspot:
+                self.status_box.append(self._hotspot_row(hotspot))
             self._phone_changed()
             self.load_history()
             if self._iphone:
@@ -444,6 +448,22 @@ stackswitcher button {
 
     #: The tethering row's words (`shani_link.tether`).
     INTERNET = "Use the phone's internet"
+
+    def _hotspot_row(self, said: str) -> Gtk.Widget:
+        """Whether this computer is the access point, said once.
+
+        Read-only on purpose: the hotspot's switch is the shell's Control
+        Center tile, and two switches for one radio is how they get out of
+        step.
+        """
+        holder = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE, margin_top=6)
+        holder.add_css_class("boxed-list")
+        row = Adw.ActionRow(title="This computer's hotspot",
+                            subtitle=GLib.markup_escape_text(said))
+        row.add_prefix(Gtk.Image(icon_name="network-wireless-symbolic"))
+        holder.append(row)
+        self.hotspot_row = row
+        return holder
 
     def _internet_row(self, target: "tuple[str, str]", internet: dict) -> Gtk.Widget:
         """One switch: browse on this computer with the phone's mobile data,

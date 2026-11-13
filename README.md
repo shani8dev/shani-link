@@ -48,6 +48,7 @@ finds, and every page says plainly what it needs when something is missing.
 | Contacts and call history | Nothing - they are kept on this computer |
 | Watch dashboard | A MoYoung watch or band (the ones the Da Fit app uses). Other Bluetooth Low Energy devices show their standard details (battery, firmware) |
 | Android phone tools | A USB cable and USB debugging turned on in the phone's Developer options |
+| Phone notifications, line, Wi-Fi and temperature | The same adb, over the service's `Phone` interface (nothing is read from a desktop that has no phone) |
 | Phone link (files over Wi-Fi) | The KDE Connect app on the phone, on the same Wi-Fi; to receive, turn on "Receive files from your phone over Wi-Fi" (Background) - it opens KDE Connect's ports in the firewall until turned off or a restart |
 | Phone link (one clipboard) | The KDE Connect app on the phone, paired; turn on "Share the clipboard with your phone" (Background, off by default). Copy on one, paste on the other; what a password manager marks secret is never sent, and the shell's clipboard history says what came from the phone |
 | This screen on your phone | USB debugging - on a cable or over Wi-Fi - or the phone's Bluetooth tethering; GStreamer on this computer |
@@ -178,7 +179,7 @@ niri with shani-shell, GNOME, Plasma - gets the same line.
 | `/dev/shani/Link/Landline` | `dev.shani.Link.Landline` | The JioFiber landline through the router, like JioJoin: set up once with the texted code, then calls, keypad, mute, hold, swap, merge, history; `Event(kind, info_json)` for everything that happens on the line |
 | `/dev/shani/Link/Contacts` | `dev.shani.Link.Contacts` | The address book (yours, then the phone's): search it, and name a number |
 | `/dev/shani/Link/Calls` | `dev.shani.Link.Calls` | Every line at once (landline, phone, the computer's modem): the shared call history, and dial / answer / hang up / keypad on any line |
-| `/dev/shani/Link/Phone` | `dev.shani.Link.Phone` | The phone's internet over Bluetooth (tethering, through NetworkManager) |
+| `/dev/shani/Link/Phone` | `dev.shani.Link.Phone` | The phone's internet over Bluetooth, USB or Wi-Fi (through NetworkManager); its notifications, line, Wi-Fi and temperatures over adb |
 
 #### Contacts, Calls and Phone, for the shell and Chronoa
 Records travel as JSON strings, as `Landline.Calls` already did. Errors are
@@ -214,6 +215,16 @@ dev.shani.Link.Phone  (/dev/shani/Link/Phone)
                                   Bluetooth tethering on the phone first. address "" is the phone
                                   paired over Bluetooth
   TetherState(s address) -> s     {address, phone, on, connection}
+  UsbTether(b on) -> s           the phone's internet over a USB cable (USB tethering): NetworkManager
+                                  brings its `usb0`/`enx*` device up, or stops. No pairing and no
+                                  address; the cable is preferred when both are connected
+  UsbTetherState() -> s          {device, on}
+  WifiTether() -> s              the Wi-Fi this computer is on, and what the phone's hotspot needs
+                                  from the person - the hotspot cannot be turned on over adb
+  Notifications(i limit) -> s    the phone's notifications, as they are (dumpsys, read only)
+  Line() -> s                   the operator, registration, radio and signal (dumpsys)
+  Wifi() -> s                   the phone's network, signal, link speed and band (dumpsys)
+  Thermal() -> s                the phone's CPU, GPU and skin temperatures (dumpsys)
 ```
 A missed call on any line is also a notification with **Call back** (on the
 line it came in on) and **Message**.

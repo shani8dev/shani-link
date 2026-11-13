@@ -127,6 +127,98 @@ def _shell(serial: str, *cmd: str) -> str:
     return (_adb(["shell", *cmd], serial).stdout or "").strip()
 
 
+def notifications(serial: str, limit: int = 20) -> str:
+    """The phone's notifications, as they are: app, title, text.
+
+    `dumpsys notification --noredact`, read only - nothing here posts, dismisses
+    or replies to anything. The format is checked against Android 16:
+    `NotificationRecord(... pkg=<package> ...)` followed by
+    `android.title=String (<title>)` and `android.text=String (<text>)`.
+    """
+    out = _shell(serial, "dumpsys", "notification", "--noredact")
+    records = []
+    for line in out.splitlines():
+        line = line.strip()
+        if line.startswith("NotificationRecord("):
+            package = re.search(r"pkg=([\w.]+)", line)
+            records.append({"pkg": package.group(1) if package else "",
+                            "title": "", "text": ""})
+        elif records:
+            for key, field in (("android.title", "title"), ("android.text", "text")):
+                if line.startswith(key + "=") and not records[-1][field]:
+                    value = line.split("=", 1)[1].strip()
+                    wrapped = re.match(r"(?:String|SpannableString)\s*\((.*)\)$", value)
+                    records[-1][field] = wrapped.group(1) if wrapped else value
+    lines = [f"- {r['pkg'] or 'an app'}: "
+             + (" — ".join(x for x in (r["title"], r["text"])
+                           if x and x not in ("null", "String (null)")) or "(no text)")
+             for r in records
+             if (r["title"] and r["title"] != "null") or (r["text"] and r["text"] != "null")]
+    if not lines:
+        return "No notifications are showing on the phone."
+    return f"{len(lines)} notification(s):\n" + "\n".join(lines[:limit])
+
+
+def telephony(serial: str) -> str:
+    """The line: operator, registration, radio and signal, as one sentence.
+
+    Read from `dumpsys telephony.registry`, checked against Android 16: the
+    state is `mVoiceRegState=0(IN_SERVICE)`, the operator
+    `mOperatorAlphaLong=`, the radio `getRilVoiceRadioTechnology=20(NR_SA)`,
+    and the signal `ssRsrp = -96`. The first block is SIM slot 0; a second
+    phone with no SIM says POWER_OFF, which is the phone's answer, not a fault.
+    """
+    out = _shell(serial, "dumpsys", "telephony.registry")
+    voice = re.search(r"mVoiceRegState=\d+\((\w+)\)", out)
+    operator = re.search(r"mOperatorAlphaLong=([^,\n}]+)", out)
+    radio = re.search(r"getRilVoiceRadioTechnology=\d+\((\w+)\)", out)
+    rsrp = re.search(r"ssRsrp\s*=\s*(-?\d+)", out)
+    if not (voice or operator):
+        return "The phone did not say anything about its line."
+    parts = [f"on {operator.group(1).strip()}" if operator else "operator unknown"]
+    parts.append("registered" if voice and voice.group(1) == "IN_SERVICE"
+                 else f"not registered ({voice.group(1).lower()})" if voice else "registration unknown")
+    if radio:
+        parts.append({"NR_SA": "5G", "LTE": "4G", "UMTS": "3G", "GSM": "2G"}.get(
+            radio.group(1), radio.group(1)))
+    if rsrp:
+        parts.append(f"signal {rsrp.group(1)} dBm")
+    return "; ".join(parts) + "."
+
+
+def wifi(serial: str) -> str:
+    """The phone's Wi-Fi: network, signal, link speed and band, as a sentence."""
+    out = _shell(serial, "dumpsys", "wifi")
+    ssid = re.search(r'SSID:\s*"([^"]+)"', out) or re.search(r"SSID:\s*([^,\n]+)", out)
+    rssi = re.search(r"RSSI:\s*(-?\d+)", out)
+    speed = re.search(r"Link speed:\s*(\d+)\s*Mbps", out)
+    freq = re.search(r"Frequency:\s*(\d+)\s*MHz", out)
+    if not (ssid or rssi):
+        return "The phone did not say anything about its Wi-Fi."
+    parts = [f"connected to {ssid.group(1)}" if ssid else "Wi-Fi is on"]
+    if rssi:
+        level = int(rssi.group(1))
+        parts.append(f"signal {level} dBm "
+                     f"({'weak' if level < -75 else 'fair' if level < -65 else 'good'})")
+    if speed:
+        parts.append(f"link speed {speed.group(1)} Mbit/s")
+    if freq:
+        parts.append("5 GHz" if int(freq.group(1)) > 4000 else "2.4 GHz")
+    return "; ".join(parts) + "."
+
+
+def thermal(serial: str) -> str:
+    """The phone's own temperatures: CPU, GPU and skin."""
+    out = _shell(serial, "dumpsys", "thermalservice")
+    found = dict((name, value) for value, name in
+                 re.findall(r"Temperature\{mValue=([\d.]+), mType=\d+, mName=(\w+)", out))
+    if not found:
+        return "The phone did not report any temperatures."
+    shown = ", ".join(f"{name.lower()} {float(value):.1f} °C"
+                     for name, value in found.items() if name.lower() in ("cpu", "gpu", "skin"))
+    return (shown or "the phone reported temperatures it did not name") + "."
+
+
 def display_size(serial: str) -> "Optional[Tuple[int, int]]":
     """The phone's own pixel size as it reports it, or None when it will not say.
 

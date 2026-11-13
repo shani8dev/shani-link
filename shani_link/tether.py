@@ -115,3 +115,109 @@ def tether(address: str, on: bool, phone: str = "") -> str:
     if code != 0:
         raise TetherError(HELP)
     return f"Connected through {who}"
+
+
+# --- the same internet over a cable, or over Wi-Fi -----------------------------
+
+#: a USB network device: RNDIS from a phone is named usbN, or enx<MAC>
+_USB_DEVICE = re.compile(r"^(?:usb\d+|enx[0-9a-f]+)$")
+
+USB_HELP = ("Turn on USB tethering on the phone - Settings › Network › Hotspot & "
+            "tethering › USB tethering - and plug it in.")
+
+
+def usb_device() -> "Optional[str]":
+    """The phone's USB network device, or None when there is no cable data link.
+
+    NetworkManager lists an RNDIS phone as ethernet; the name is what tells it
+    from the computer's own socket: a phone is `usb0` or `enx<MAC>`.
+    """
+    if not available():
+        return None
+    code, out = _nmcli("-t", "-f", "DEVICE,TYPE,STATE", "device", "status")
+    if code != 0:
+        return None
+    for line in out.splitlines():
+        parts = _fields(line)
+        if len(parts) >= 2 and _USB_DEVICE.match(parts[0]) and parts[1] == "ethernet":
+            return parts[0]
+    return None
+
+
+def usb(on: bool = True) -> str:
+    """Use the phone's internet over a USB cable, or stop. The cable needs no
+    pairing and no address: NetworkManager brings the phone's DHCP up and the
+    phone becomes the router."""
+    if not available():
+        raise TetherError("NetworkManager (nmcli) is not installed")
+    device = usb_device()
+    if device is None:
+        raise TetherError("No phone on a USB data connection. " + USB_HELP)
+    code, out = _nmcli("device", "connect" if on else "disconnect", device)
+    if code != 0:
+        raise TetherError(f"Could not {'connect' if on else 'disconnect'} {device}: {out}")
+    if not on:
+        return f"Disconnected {device}; the phone's internet is no longer routed here."
+    return (f"Connected {device} - the phone's internet is available here. "
+            "The Wi-Fi may still be the default route; check in the browser.")
+
+
+def usb_state() -> dict:
+    """{device, on} - the phone's USB data link, and whether it is up."""
+    device = usb_device()
+    if device is None:
+        return {"device": "", "on": False}
+    code, out = _nmcli("-t", "-f", "DEVICE,STATE", "device", "status")
+    on = False
+    if code == 0:
+        for line in out.splitlines():
+            parts = _fields(line)
+            if parts and parts[0] == device and len(parts) > 1:
+                on = parts[1].startswith("connected")
+    return {"device": device, "on": on}
+
+
+def hotspot() -> str:
+    """Whether this computer is sharing its internet as a Wi-Fi access point.
+
+    The shell's hotspot tile runs `nmcli device wifi hotspot`; this reads the
+    graph back, so a page can say which network a phone should join without
+    turning the hotspot on from somewhere else.
+    """
+    if not available():
+        return "NetworkManager (nmcli) is not installed."
+    code, out = _nmcli("-t", "-f", "NAME,UUID,TYPE", "connection", "show", "--active")
+    if code != 0:
+        return "Could not read the active connections from NetworkManager."
+    for line in out.splitlines():
+        parts = _fields(line)
+        if len(parts) < 3 or parts[2] != "802-11-wireless":
+            continue
+        c2, mode = _nmcli("-g", "802-11-wireless.mode", "connection", "show",
+                          "uuid", parts[1])
+        if c2 == 0 and mode.strip() == "ap":
+            return f"This computer's hotspot is on: {parts[0]}."
+    return "This computer's hotspot is off."
+
+
+def wifi() -> str:
+    """The Wi-Fi this computer is on, and what the phone's hotspot needs.
+
+    The hotspot itself cannot be turned on from here - `cmd wifi` has no
+    hotspot verb and the soft access point's passphrase is not readable over
+    adb - so this reports the state and says what to join.
+    """
+    code, out = _nmcli("-t", "-f", "active,ssid", "dev", "wifi")
+    if code != 0:
+        return "Could not read the Wi-Fi state from NetworkManager."
+    live = [line.split(":", 1)[1] for line in out.splitlines()
+            if line.startswith("yes:") and ":" in line]
+    mine = hotspot()
+    if mine.endswith("is off."):
+        if not live:
+            return ("The computer is not on Wi-Fi. To use the phone's hotspot, turn it on "
+                    "on the phone and join it in the Wi-Fi settings.")
+        return (f"On Wi-Fi: {live[0]}. To use the phone's hotspot, turn it on on the phone "
+                "and join it in the Wi-Fi settings.")
+    # the computer is the access point: its own SSID is what a phone joins
+    return (f"{mine} A phone that joins it uses this computer's internet.")

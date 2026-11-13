@@ -1,83 +1,118 @@
-"""Bluetooth tethering through NetworkManager, against `tests/fake_nmcli.py` first on PATH."""
+"""Tethering over a cable and Wi-Fi, against a fake nmcli.
+
+Bluetooth has its own tests in `tests/test_app_tether.py` and the service on a
+private bus; these are the two roads that need no pairing and no address, so
+they are pure NetworkManager calls: what device is there, and what to do with it.
+"""
 import json
-import os
-import pathlib
-import sys
 
 import pytest
 
-ROOT = pathlib.Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT))
+from shani_link import tether
 
-from shani_link import tether  # noqa: E402
 
-MAC = "AA:00:00:00:00:01"
+def _nmcli(answers):
+    """A fake `_nmcli`: the first key the call starts with wins."""
+    calls = []
+
+    def run(*args):
+        calls.append(" ".join(args))
+        joined = " ".join(args)
+        for prefix, out in answers.items():
+            if prefix in joined:
+                return 0, out
+        return 1, f"unexpected: {joined}"
+
+    run.calls = calls
+    return run
+
+
+DEVICES = ("lo:loopback:unmanaged\n"
+           "enp0s31f6:ethernet:unavailable\n"
+           "usb0:ethernet:connected\n"
+           "wlan0:wifi:connected\n")
+STATES = ("lo:unmanaged\n"
+          "enp0s31f6:unavailable\n"
+          "usb0:connected\n"
+          "wlan0:connected\n")
 
 
 @pytest.fixture
-def nm(tmp_path, monkeypatch):
-    bindir = tmp_path / "bin"
-    bindir.mkdir()
-    (bindir / "nmcli").symlink_to(ROOT / "tests" / "fake_nmcli.py")
-    state = tmp_path / "nmcli.json"
-    monkeypatch.setenv("PATH", f"{bindir}{os.pathsep}{os.environ['PATH']}")
-    monkeypatch.setenv("FAKE_NMCLI_STATE", str(state))
+def nmcli(monkeypatch):
+    monkeypatch.setattr(tether, "available", lambda: True)
+    holder = {}
 
-    class NM:
-        def set(self, **values):
-            data = self.read()
-            data.update(values)
-            state.write_text(json.dumps(data))
+    def install(answers):
+        fake = _nmcli(answers)
+        holder["fake"] = fake
+        monkeypatch.setattr(tether, "_nmcli", fake)
+        return fake
 
-        def read(self):
-            return json.loads(state.read_text()) if state.exists() else {}
-
-    n = NM()
-    n.set(connections=[{"name": "Home Wi-Fi", "uuid": "w-1", "type": "802-11-wireless", "active": True}])
-    return n
+    return install
 
 
-def test_first_use_adds_a_panu_connection_for_the_phone_then_brings_it_up(nm):
-    assert tether.state(MAC, "Pixel 8")["on"] is False
-    assert tether.tether(MAC, True, "Pixel 8") == "Connected through Pixel 8"
-    calls = nm.read()["calls"]
-    add = next(c for c in calls if c[:2] == ["connection", "add"])
-    assert add == ["connection", "add", "type", "bluetooth", "bt-type", "panu",
-                   "bluetooth.bdaddr", MAC, "con-name", "Pixel 8 internet"]
-    assert any(c[:2] == ["connection", "up"] for c in calls)
-    st = tether.state(MAC, "Pixel 8")
-    assert st["on"] is True and st["connection"] == "Pixel 8 internet"
+def test_the_cable_phone_is_known_by_its_device_name(nmcli):
+    nmcli({"-f DEVICE,TYPE,STATE device status": DEVICES})
+    assert tether.usb_device() == "usb0"
 
 
-def test_an_existing_connection_is_reused_not_added_again(nm):
-    nm.set(connections=[{"name": "My phone net", "uuid": "bt-1", "type": "bluetooth",
-                         "bdaddr": MAC, "bttype": "panu", "active": False}])
-    assert tether.tether(MAC.lower(), True, "Pixel 8") == "Connected through Pixel 8"
-    calls = nm.read()["calls"]
-    assert not any(c[:2] == ["connection", "add"] for c in calls)
-    assert ["connection", "up", "uuid", "bt-1"] in calls
+def test_a_computer_with_no_cable_has_no_usb_phone(nmcli):
+    nmcli({"-f DEVICE,TYPE,STATE device status":
+           "lo:loopback:unmanaged\nenp0s31f6:ethernet:unavailable\n"})
+    assert tether.usb_device() is None
 
 
-def test_off_brings_it_down(nm):
-    tether.tether(MAC, True, "Pixel 8")
-    assert tether.tether(MAC, False, "Pixel 8") == "Stopped using Pixel 8's internet"
-    assert any(c[:2] == ["connection", "down"] for c in nm.read()["calls"])
-    assert tether.state(MAC)["on"] is False
-    # off when already off is not an error
-    assert "Not using" in tether.tether(MAC, False, "Pixel 8")
+def test_usb_tethering_brings_the_cable_up(nmcli):
+    fake = nmcli({"-f DEVICE,TYPE,STATE device status": DEVICES,
+                  "device connect": "", "device disconnect": ""})
+    said = tether.usb(True)
+    assert "usb0" in said and "available" in said, said
+    assert "device connect usb0" in fake.calls, fake.calls
 
 
-def test_a_phone_that_is_not_sharing_says_where_the_switch_is(nm):
-    nm.set(phone_shares=False)
-    with pytest.raises(tether.TetherError) as err:
-        tether.tether(MAC, True, "Pixel 8")
-    assert "Turn on Bluetooth tethering on the phone first" in str(err.value)
-    assert "Settings › Network › Hotspot & tethering" in str(err.value)
-    assert tether.state(MAC)["on"] is False
+def test_usb_tethering_can_be_stopped_again(nmcli):
+    fake = nmcli({"-f DEVICE,TYPE,STATE device status": DEVICES,
+                  "device disconnect": ""})
+    said = tether.usb(False)
+    assert "Disconnected usb0" in said, said
+    assert "device disconnect usb0" in fake.calls, fake.calls
 
 
-def test_no_networkmanager_is_said_plainly(monkeypatch, tmp_path):
-    monkeypatch.setenv("PATH", str(tmp_path))
-    assert tether.state(MAC)["on"] is False
-    with pytest.raises(tether.TetherError, match="nmcli"):
-        tether.tether(MAC, True)
+def test_no_cable_names_the_switch_on_the_phone(nmcli):
+    nmcli({"-f DEVICE,TYPE,STATE device status": "lo:loopback:unmanaged\n"})
+    with pytest.raises(tether.TetherError) as caught:
+        tether.usb(True)
+    assert "USB tethering" in str(caught.value), caught.value
+
+
+def test_the_state_says_whether_the_cable_is_up(nmcli):
+    nmcli({"-f DEVICE,TYPE,STATE device status": DEVICES,
+           "-f DEVICE,STATE device status": STATES})
+    assert tether.usb_state() == {"device": "usb0", "on": True}
+    nmcli({"-f DEVICE,TYPE,STATE device status": DEVICES,
+           "-f DEVICE,STATE device status": "usb0:disconnected\n"})
+    assert tether.usb_state() == {"device": "usb0", "on": False}
+
+
+def test_the_wifi_answer_names_the_network(nmcli):
+    nmcli({"dev wifi": "no::\nyes:ShaniNet\n",
+           "connection show --active": "Wired connection 1:abc:802-3-ethernet\n"})
+    assert "ShaniNet" in tether.wifi()
+    nmcli({"dev wifi": "no::\n", "connection show --active": ""})
+    assert "not on Wi-Fi" in tether.wifi()
+
+
+def test_the_computers_own_hotspot_is_not_called_wifi(nmcli):
+    nmcli({"dev wifi": "no::\nyes:shani-hotspot\n",
+           "connection show --active": "Hotspot:uuid-1:802-11-wireless\n",
+           "802-11-wireless.mode": "ap\n"})
+    said = tether.wifi()
+    assert "hotspot is on: Hotspot" in said, said
+    assert "On Wi-Fi" not in said, said
+
+
+def test_a_joined_network_is_not_an_access_point(nmcli):
+    nmcli({"dev wifi": "no::\nyes:ShaniNet\n",
+           "connection show --active": "ShaniNet:uuid-2:802-11-wireless\n",
+           "802-11-wireless.mode": "infrastructure\n"})
+    assert "On Wi-Fi: ShaniNet" in tether.wifi()

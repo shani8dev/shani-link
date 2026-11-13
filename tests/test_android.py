@@ -23,6 +23,14 @@ case "$1 $2" in
   "shell wm") if [ "$3" = "size" ]; then
                 printf 'Physical size: 1080x2400\nOverride size: 1080x2340\n'
               fi ;;
+  "shell dumpsys") case "$3" in
+      battery) printf 'Current Battery Service state:\n  AC powered: false\n  USB powered: true\n  level: 76\n' ;;
+      notification) printf 'NotificationRecord(0x1 pkg=com.whatsapp user=0)\n      android.title=String (Alice)\n      android.text=String (on my way)\n    NotificationRecord(0x2 pkg=com.google.android.dialer user=0)\n      android.title=String (Missed call)\n' ;;
+      telephony.registry) printf '  mVoiceRegState=0(IN_SERVICE)\n  mOperatorAlphaLong=Jio True5G\n  getRilVoiceRadioTechnology=20(NR_SA)\n  mSignalStrength=SignalStrength:{ ssRsrp = -95 ssSinr = 15 }\n' ;;
+      wifi) printf 'mWifiInfo SSID: "ShaniNet", RSSI: -58, Link speed: 390Mbps, Frequency: 5180MHz' ;;
+      thermalservice) printf 'Cached temperatures:\n\tTemperature{mValue=62.606, mType=0, mName=CPU, mStatus=0}\n\tTemperature{mValue=47.079, mType=3, mName=SKIN, mStatus=0}\n' ;;
+      *) exit 2 ;;
+    esac ;;
   "exec-out screencap") printf '\211PNG\r\n\032\nfake' ;;
   "shell am") echo "Starting: Intent { act=android.intent.action.VIEW dat=$7 }" ;;
   push*) echo "1 file pushed" ;;

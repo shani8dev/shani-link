@@ -99,6 +99,13 @@ PHONE_XML = f"""
   <interface name="{PHONE_IFACE}">
     <method name="Tether"><arg name="address" type="s"/><arg name="on" type="b"/><arg type="s" direction="out"/></method>
     <method name="TetherState"><arg name="address" type="s"/><arg type="s" direction="out"/></method>
+    <method name="UsbTether"><arg name="on" type="b"/><arg type="s" direction="out"/></method>
+    <method name="UsbTetherState"><arg type="s" direction="out"/></method>
+    <method name="WifiTether"><arg type="s" direction="out"/></method>
+    <method name="Notifications"><arg name="limit" type="i"/><arg type="s" direction="out"/></method>
+    <method name="Line"><arg type="s" direction="out"/></method>
+    <method name="Wifi"><arg type="s" direction="out"/></method>
+    <method name="Thermal"><arg type="s" direction="out"/></method>
   </interface>
 </node>
 """
@@ -280,8 +287,9 @@ class Service:
         self._answer(invocation, run)
 
     def _phone_call(self, _conn, _sender, _path, _iface, method, params, invocation) -> None:
-        """The phone's internet over Bluetooth (`tether`). An empty address is
-        the phone paired over Bluetooth; its name comes from BlueZ."""
+        """The phone's internet over Bluetooth (`tether`), and what the phone
+        reports about itself over adb. An empty address is the phone paired over
+        Bluetooth; its name comes from BlueZ."""
         from shani_link import phone_bluez, tether
         a = params.unpack()
 
@@ -295,12 +303,37 @@ class Service:
             return address, next((n for ad, n, _c in paired if ad.upper() == address.upper()), "")
 
         def run():
+            if method in ("Notifications", "Line", "Wifi", "Thermal"):
+                # The reads are adb's, not Bluetooth's: a cable or Wi-Fi
+                # debugging. The Android page has no shell by design, so this is
+                # where they are reachable - over the bus, for Chronoa's skills
+                # and anything else.
+                from shani_link import android
+                if os.environ.get("SHANI_LINK_NO_DEVICES"):
+                    # the service tests' bus has no phone, and must not borrow
+                    # the developer's
+                    raise ValueError("no Android device is connected on this test bus")
+                serial, problem = android.ready_serial()
+                if problem:
+                    raise ValueError(problem)
+                limit = a[0] if a and isinstance(a[0], int) else 20
+                said = {"Notifications": lambda: android.notifications(serial, limit),
+                        "Line": lambda: android.telephony(serial),
+                        "Wifi": lambda: android.wifi(serial),
+                        "Thermal": lambda: android.thermal(serial)}[method]()
+                return GLib.Variant("(s)", (said,))
             if method == "Tether":
                 address, name = phone(a[0])
                 return GLib.Variant("(s)", (tether.tether(address, bool(a[1]), name),))
             if method == "TetherState":
                 address, name = phone(a[0])
                 return GLib.Variant("(s)", (_json(tether.state(address, name)),))
+            if method == "UsbTether":
+                return GLib.Variant("(s)", (tether.usb(bool(a[0])),))
+            if method == "UsbTetherState":
+                return GLib.Variant("(s)", (_json(tether.usb_state()),))
+            if method == "WifiTether":
+                return GLib.Variant("(s)", (tether.wifi(),))
             raise ValueError(f"no method {method}")
         self._answer(invocation, run)
 
