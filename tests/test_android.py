@@ -17,18 +17,23 @@ case "$1 $2" in
   "devices -l") printf 'List of devices attached\nR58N123 device usb:1-1 product:x model:Pixel_8 device:shiba\n' ;;
   "shell getprop") case "$3" in ro.product.manufacturer) echo Google;; ro.product.model) echo "Pixel 8";;
                    ro.build.version.release) echo 15;; ro.build.version.security_patch) echo 2026-09-05;; esac ;;
-  "shell dumpsys") printf 'Current Battery Service state:\n  AC powered: false\n  USB powered: true\n  level: 76\n' ;;
   "shell df") printf 'Filesystem Size Used Avail Use%% Mounted\n/dev/fuse 110G 40G 70G 37%% /storage/emulated\n' ;;
   "shell pm") printf 'package:com.whatsapp\npackage:org.mozilla.firefox\n' ;;
   "shell wm") if [ "$3" = "size" ]; then
                 printf 'Physical size: 1080x2400\nOverride size: 1080x2340\n'
               fi ;;
+  "shell cmd") case "$3 $4" in
+      "location is-location-enabled") echo false ;;
+      *) exit 2 ;;
+    esac ;;
   "shell dumpsys") case "$3" in
       battery) printf 'Current Battery Service state:\n  AC powered: false\n  USB powered: true\n  level: 76\n' ;;
       notification) printf 'NotificationRecord(0x1 pkg=com.whatsapp user=0)\n      android.title=String (Alice)\n      android.text=String (on my way)\n    NotificationRecord(0x2 pkg=com.google.android.dialer user=0)\n      android.title=String (Missed call)\n' ;;
       telephony.registry) printf '  mVoiceRegState=0(IN_SERVICE)\n  mOperatorAlphaLong=Jio True5G\n  getRilVoiceRadioTechnology=20(NR_SA)\n  mSignalStrength=SignalStrength:{ ssRsrp = -95 ssSinr = 15 }\n' ;;
       wifi) printf 'mWifiInfo SSID: "ShaniNet", RSSI: -58, Link speed: 390Mbps, Frequency: 5180MHz' ;;
       thermalservice) printf 'Cached temperatures:\n\tTemperature{mValue=62.606, mType=0, mName=CPU, mStatus=0}\n\tTemperature{mValue=47.079, mType=3, mName=SKIN, mStatus=0}\n' ;;
+      usagestats) printf '      package=com.google.android.youtube totalTimeUsed="40:28" totalTimeVisible="40:41" appLaunchCount=12\n      package=com.whatsapp totalTimeUsed="00:05" totalTimeVisible="00:05" appLaunchCount=3\n      package=com.android.launcher3 totalTimeUsed="00:00" totalTimeVisible="00:00"\n' ;;
+      display) printf '    DisplayDeviceInfo{"Built-in Screen": uniqueId="x", 1080 x 2460, modeId 2, renderFrameRate 120.00001, density 480, hdrCapabilities HdrCapabilities{mSupportedHdrTypes=[]}}\n' ;;
       *) exit 2 ;;
     esac ;;
   "exec-out screencap") printf '\211PNG\r\n\032\nfake' ;;
@@ -165,3 +170,19 @@ def test_a_timeout_is_said_not_raised(monkeypatch):
 def test_human_size():
     assert ad.human_size(12) == "12 B" and ad.human_size(2048) == "2.0 KiB"
     assert Path(ad.default_screenshot()).suffix == ".png"
+
+
+def test_usage_is_per_app_and_busiest_first(fake_adb):
+    said = ad.usage("R58N123")
+    assert "youtube: 40 h 41 min" in said and "whatsapp: 5 min" in said, said
+    assert "launcher" not in said, "an app with no screen time is not usage"
+
+
+def test_the_location_switch_is_read_as_a_sentence(fake_adb):
+    assert ad.location("R58N123") == "The phone's location is off."
+
+
+def test_the_display_is_size_rate_density_and_hdr(fake_adb):
+    said = ad.display("R58N123")
+    assert "1080x2460" in said and "120 Hz" in said, said
+    assert "density 480" in said and "no HDR" in said, said

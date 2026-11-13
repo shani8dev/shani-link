@@ -219,6 +219,79 @@ def thermal(serial: str) -> str:
     return (shown or "the phone reported temperatures it did not name") + "."
 
 
+def location(serial: str) -> str:
+    """Whether the phone's location is on - `cmd location`, read only."""
+    out = _shell(serial, "cmd", "location", "is-location-enabled")
+    return ("The phone's location is on." if out.strip().lower() == "true"
+            else "The phone's location is off.")
+
+
+def _span(minutes: int) -> str:
+    """120 -> "2 h", 41 -> "41 min": screen time is not minutes past 59."""
+    hours, rest = divmod(int(minutes), 60)
+    if not hours:
+        return f"{rest} min"
+    return f"{hours} h" if not rest else f"{hours} h {rest} min"
+
+
+def _minutes(clock: str) -> int:
+    """`HH:MM` or `HH:MM:SS` as minutes, 0 when it is not a clock."""
+    parts = (clock or "").split(":")
+    try:
+        if len(parts) == 2:
+            return int(parts[0]) * 60 + int(parts[1])
+        if len(parts) == 3:
+            return int(parts[0]) * 60 + int(parts[1])
+    except ValueError:
+        return 0
+    return 0
+
+
+def usage(serial: str, limit: int = 10) -> str:
+    """What the phone was used for, per app, as screen time.
+
+    `dumpsys usagestats` prints, for every package, `totalTimeVisible="HH:MM"`
+    for the current interval. Read only; package names are shortened to their
+    last part, which is what a person recognises ("youtube", not the full id).
+    """
+    out = _shell(serial, "dumpsys", "usagestats")
+    rows = []
+    for line in out.splitlines():
+        found = re.search(r'package=([\w.]+) totalTimeUsed="([\d:]+)".*?'
+                          r'totalTimeVisible="([\d:]+)"', line)
+        if not found:
+            continue
+        minutes = _minutes(found.group(3))
+        if minutes > 0:
+            rows.append((minutes, found.group(1)))
+    if not rows:
+        return "The phone did not report any screen time."
+    rows.sort(reverse=True)
+    total = sum(minutes for minutes, _package in rows)
+    lines = [f"- {package.rsplit('.', 1)[-1]}: {_span(value)}"
+             for value, package in rows[:limit]]
+    return (f"{_span(total)} of screen time in this interval, busiest first:\n"
+            + "\n".join(lines))
+
+
+def display(serial: str) -> str:
+    """The phone's panel: size, refresh rate, density and HDR, as a sentence."""
+    out = _shell(serial, "dumpsys", "display")
+    found = re.search(r"DisplayDeviceInfo\{.*?(\d+) x (\d+), modeId \d+, "
+                      r"renderFrameRate ([\d.]+)", out)
+    if not found:
+        return "The phone did not say anything about its display."
+    width, height, rate = found.groups()
+    density = re.search(r"density (\d+)", out)
+    hdr = re.search(r"HdrCapabilities\{mSupportedHdrTypes=\[([^\]]*)\]", out)
+    parts = [f"{width}x{height}", f"{float(rate):.0f} Hz" if float(rate) > 1 else rate]
+    if density:
+        parts.append(f"density {density.group(1)}")
+    if hdr is not None:
+        parts.append("HDR" if hdr.group(1).strip() else "no HDR")
+    return ", ".join(parts) + "."
+
+
 def display_size(serial: str) -> "Optional[Tuple[int, int]]":
     """The phone's own pixel size as it reports it, or None when it will not say.
 

@@ -103,9 +103,12 @@ PHONE_XML = f"""
     <method name="UsbTetherState"><arg type="s" direction="out"/></method>
     <method name="WifiTether"><arg type="s" direction="out"/></method>
     <method name="Notifications"><arg name="limit" type="i"/><arg type="s" direction="out"/></method>
+    <method name="Usage"><arg name="limit" type="i"/><arg type="s" direction="out"/></method>
     <method name="Line"><arg type="s" direction="out"/></method>
     <method name="Wifi"><arg type="s" direction="out"/></method>
     <method name="Thermal"><arg type="s" direction="out"/></method>
+    <method name="Location"><arg type="s" direction="out"/></method>
+    <method name="Display"><arg type="s" direction="out"/></method>
   </interface>
 </node>
 """
@@ -303,7 +306,7 @@ class Service:
             return address, next((n for ad, n, _c in paired if ad.upper() == address.upper()), "")
 
         def run():
-            if method in ("Notifications", "Line", "Wifi", "Thermal"):
+            if method in ("Notifications", "Usage", "Line", "Wifi", "Thermal", "Location", "Display"):
                 # The reads are adb's, not Bluetooth's: a cable or Wi-Fi
                 # debugging. The Android page has no shell by design, so this is
                 # where they are reachable - over the bus, for Chronoa's skills
@@ -316,11 +319,14 @@ class Service:
                 serial, problem = android.ready_serial()
                 if problem:
                     raise ValueError(problem)
-                limit = a[0] if a and isinstance(a[0], int) else 20
-                said = {"Notifications": lambda: android.notifications(serial, limit),
+                limit = a[0] if a and isinstance(a[0], int) else None
+                said = {"Notifications": lambda: android.notifications(serial, limit or 20),
+                        "Usage": lambda: android.usage(serial, limit or 10),
                         "Line": lambda: android.telephony(serial),
                         "Wifi": lambda: android.wifi(serial),
-                        "Thermal": lambda: android.thermal(serial)}[method]()
+                        "Thermal": lambda: android.thermal(serial),
+                        "Location": lambda: android.location(serial),
+                        "Display": lambda: android.display(serial)}[method]()
                 return GLib.Variant("(s)", (said,))
             if method == "Tether":
                 address, name = phone(a[0])

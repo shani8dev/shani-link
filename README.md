@@ -222,9 +222,12 @@ dev.shani.Link.Phone  (/dev/shani/Link/Phone)
   WifiTether() -> s              the Wi-Fi this computer is on, and what the phone's hotspot needs
                                   from the person - the hotspot cannot be turned on over adb
   Notifications(i limit) -> s    the phone's notifications, as they are (dumpsys, read only)
+  Usage(i limit) -> s           screen time per app in the current interval, busiest first
   Line() -> s                   the operator, registration, radio and signal (dumpsys)
   Wifi() -> s                   the phone's network, signal, link speed and band (dumpsys)
   Thermal() -> s                the phone's CPU, GPU and skin temperatures (dumpsys)
+  Location() -> s               whether the phone's location is on (cmd location)
+  Display() -> s                the phone's size, refresh rate, density and HDR (dumpsys)
 ```
 A missed call on any line is also a notification with **Call back** (on the
 line it came in on) and **Message**.

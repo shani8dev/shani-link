@@ -79,6 +79,9 @@ def test_the_phones_own_reads_cross_the_bus(tmp_path):
     script = (_gdbus("/dev/shani/Link/Phone", "Line")
               + _gdbus("/dev/shani/Link/Phone", "Wifi")
               + _gdbus("/dev/shani/Link/Phone", "Thermal")
+              + _gdbus("/dev/shani/Link/Phone", "Location")
+              + _gdbus("/dev/shani/Link/Phone", "Display")
+              + _gdbus("/dev/shani/Link/Phone", "Usage", "5")
               + _gdbus("/dev/shani/Link/Phone", "Notifications", "5"))
     out = on_bus(script, tmp_path)
     assert "dev.shani.Link.Error" in out, out
