@@ -12,6 +12,10 @@ and accepted this computer's key.
 
 Every function answers with a sentence a person can read; nothing raises for an
 ordinary failure (no adb, no phone, a locked screen, a timeout).
+
+Two questions answer in values rather than sentences, because a program rather
+than a person asks them: `ready_serial()` (which phone a cable can reach) and
+`display_size()` (how big its picture is) - both used by `screen_stream`.
 """
 from __future__ import annotations
 
@@ -80,8 +84,43 @@ def _pick(serial: str) -> "Tuple[str, str]":
     return ready[0][0], ""
 
 
+def ready_serial() -> "Tuple[str, str]":
+    """(serial, problem): the one phone `adb devices` says is ready, or why none is.
+
+    The screen stream asks before it offers the cable: one phone, ready, is the
+    whole condition under which `adb reverse` means anything. Same answer as the
+    verbs get, with the state spelled out for a person.
+    """
+    return _pick("")
+
+
 def _shell(serial: str, *cmd: str) -> str:
     return (_adb(["shell", *cmd], serial).stdout or "").strip()
+
+
+def display_size(serial: str) -> "Optional[Tuple[int, int]]":
+    """The phone's own pixel size as it reports it, or None when it will not say.
+
+    An override wins over the physical size: an override is what the person
+    actually sees, and a mirrored desktop should match the picture, not the
+    panel. Landscape is not decided here - that belongs to whoever encodes.
+    """
+    override = physical = None
+    for line in _shell(serial, "wm", "size").splitlines():
+        if "size:" not in line:
+            continue
+        try:
+            width_str, height_str = line.split("size:", 1)[1].strip().lower().split("x", 1)
+            width, height = int(width_str), int(height_str)
+        except ValueError:
+            continue
+        if width <= 0 or height <= 0:
+            continue
+        if line.strip().startswith("Override"):
+            override = (width, height)
+        else:
+            physical = (width, height)
+    return override or physical
 
 
 def human_size(num_bytes: float) -> str:

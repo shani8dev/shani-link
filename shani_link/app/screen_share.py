@@ -1,14 +1,20 @@
 """Screen share: this computer's screen, on a paired phone.
 
-`shani_link.screen_stream` does it - the ScreenCast portal round trip, the VP8
-pipeline, the one-viewer server. Moved here from Shani Chronoa, where the panel
-went through the assistant's `screen_to_phone` skill and its
+`shani_link.screen_stream` does it - the ScreenCast portal round trip, the
+encoder, the one-viewer server - over the USB cable when one is there and over
+the phone's Bluetooth network when one is not. Moved here from Shani Chronoa,
+where the panel went through the assistant's `screen_to_phone` skill and its
 `screen-share-enabled` consent. Here pressing Start is the person's own act; the
 desktop's ScreenCast portal still asks them what to share, every time.
 
 **The stream is a separate process** (`python -m shani_link.screen_stream`),
 because the portal round trip wants a GLib main loop of its own and a stream
 should not die with a window. It is tracked by its process, never by name.
+
+**Its log is the page's memory.** Once the process is gone its last sentence is
+the only account of why - so the stream writes to a small log under
+`~/.local/state/shani-link`, and Check reads the last line back rather than
+leaving a person with a frozen phone picture and no explanation.
 
 **The check is slow and the page says so** (it imports GStreamer and reads the
 kernel's address table), so every action runs on a worker.
@@ -28,14 +34,38 @@ gi.require_version("Gtk", "4.0")
 from gi.repository import GLib, Gtk  # noqa: E402
 
 from shani_link.app import common  # noqa: E402
+from shani_link import paths  # noqa: E402
 
 TITLE = "Screen share"
 ICON = "send-to-symbolic"
-SUBTITLE = "Show this computer's screen on your phone, over Bluetooth."
+SUBTITLE = "Show this computer's screen on your phone, over the cable or Bluetooth."
 
 
 #: The running stream, tracked by its process (never found again by name).
 _PROC: "dict[str, Optional[subprocess.Popen]]" = {}
+
+#: What the stream last said. One file, overwritten by every start.
+_LOG = "screen-stream.log"
+
+
+def log_path():
+    return paths.state_home() / "shani-link" / _LOG
+
+
+def last_words() -> str:
+    """The last thing the stream said, or "" when it never said anything."""
+    try:
+        lines = [line.strip() for line in log_path().read_text(encoding="utf-8").splitlines()
+                 if line.strip()]
+    except OSError:
+        return ""
+    return lines[-1] if lines else ""
+
+
+def road_detail(transport: str, where: str) -> str:
+    """The sentence for one road: the address, and which road it is."""
+    road = "over the USB cable" if transport == "usb" else "over Bluetooth"
+    return f"http://{where} would serve it {road}"
 
 
 def check() -> "tuple[str, str]":
@@ -44,21 +74,16 @@ def check() -> "tuple[str, str]":
     ok, why = screen_stream.gstreamer_ready()
     if not ok:
         return "cannot encode", why
-    host = screen_stream.bluetooth_address()
-    if not host:
-        return ("no Bluetooth network",
-                "the phone is not sharing its network over Bluetooth; turn on "
-                "its tethering and connect to it first")
-    return "ready", f"http://{host}:{screen_stream.PORT} would serve it"
+    transport, where = screen_stream.choose()
+    if not transport:
+        return "no phone", where
+    return "ready", road_detail(transport, where)
 
 
 def act(action: str) -> str:
     """status | start | stop, in a sentence."""
     if action == "status":
-        state, detail = check()
-        if state == "ready":
-            return f"The screen can be shared: {detail}."
-        return f"The screen cannot be shared right now ({state}): {detail}."
+        return _status()
     proc = _PROC.get("proc")
     if action == "stop":
         if proc is None or proc.poll() is not None:
@@ -69,6 +94,7 @@ def act(action: str) -> str:
         except subprocess.TimeoutExpired:
             proc.kill()
         _PROC["proc"] = None
+        _PROC.pop("where", None)
         return "Stopped. The portal session is closed and nothing is streamed."
     if action != "start":
         return f"action must be status, start or stop, not {action!r}"
@@ -77,16 +103,44 @@ def act(action: str) -> str:
         return f"Not started: {state} ({detail}). Fix that first - the portal was not opened."
     if proc is not None and proc.poll() is None:
         return f"Already sharing on {detail}."
+    _PROC["proc"] = None                      # the old one has finished; forget it
+
+    from shani_link import screen_stream
+    # The same question again, and both the sentence and the stream come from
+    # this answer: a cable that blinks between two probes must not leave the
+    # page naming one road and the process taking the other.
+    transport, where = screen_stream.choose()
+    detail = road_detail(transport, where)
     package_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     env = dict(os.environ)
     env["PYTHONPATH"] = package_root + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+    env["SHANI_LINK_SCREEN_TRANSPORT"] = transport
     try:
-        _PROC["proc"] = subprocess.Popen([sys.executable, "-m", "shani_link.screen_stream"],
-                                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env)
+        log = log_path()
+        log.parent.mkdir(parents=True, exist_ok=True)
+        with open(log, "w", encoding="utf-8") as handle:
+            _PROC["proc"] = subprocess.Popen([sys.executable, "-m", "shani_link.screen_stream"],
+                                             stdout=handle, stderr=subprocess.STDOUT, env=env)
     except OSError as exc:
         return f"The stream would not start ({exc})."
+    _PROC["where"] = detail
     return (f"Sharing the screen on {detail}. Open that address on the phone. "
             "The desktop asked you first and will ask again next time.")
+
+
+def _status() -> str:
+    """Whether it can share, whether it is sharing, and - if it stopped - why."""
+    proc = _PROC.get("proc")
+    if proc is not None:
+        if proc.poll() is None:
+            return f"Sharing the screen on {_PROC.get('where') or 'the phone'} right now."
+        _PROC["proc"] = None
+        said = last_words()
+        return ("The stream has stopped" + (f": {said}." if said else ".")).replace("..", ".")
+    state, detail = check()
+    if state == "ready":
+        return f"The screen can be shared: {detail}."
+    return f"The screen cannot be shared right now ({state}): {detail}."
 
 
 class _ShareSurface:
@@ -100,9 +154,11 @@ class _ShareSurface:
         self._group = common.group()
         self._body.append(self._group)
         self._row = common.row("Share this screen with your phone",
-                               "First turn on Bluetooth tethering on the phone and connect "
-                               "this computer to it. You choose what to share; nothing "
-                               "leaves the Bluetooth link.", suffix=self._buttons())
+                               "Plug the phone in with USB debugging on, or turn on "
+                               "its Bluetooth tethering and connect this computer to "
+                               "it. You choose what to share; over the cable the "
+                               "picture never leaves the phone's own loopback.",
+                               suffix=self._buttons())
         self._group.add(self._row)
         #: What the last action said, in full - a truncated one-line label is not
         #: a report somebody can act on.

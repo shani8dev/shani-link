@@ -138,14 +138,90 @@ def test_a_machine_that_cannot_share_says_what_is_missing(monkeypatch):
 def test_no_bluetooth_network_is_its_own_reason(monkeypatch):
     from shani_link import screen_stream
     monkeypatch.setattr(screen_stream, "gstreamer_ready", lambda: (True, ""))
+    monkeypatch.setattr(screen_stream, "usb_ready", lambda: (False, "no Android device on a cable"))
     monkeypatch.setattr(screen_stream, "bluetooth_address", lambda: None)
-    assert "no Bluetooth network" in surface_mod.act("status")
+    said = surface_mod.act("status")
+    # both roads are named: "not on Bluetooth" alone leaves a person hunting
+    # for a setting when the answer is a cable
+    assert "not sharing its network over Bluetooth" in said, said
+    assert "no Android device on a cable" in said, said
+
+
+def test_the_cable_is_preferred_and_named(monkeypatch):
+    """A phone on a cable is the sturdier road, so it is the one offered."""
+    from shani_link import screen_stream
+    monkeypatch.setattr(screen_stream, "gstreamer_ready", lambda: (True, ""))
+    monkeypatch.setattr(screen_stream, "usb_ready", lambda: (True, ""))
+    monkeypatch.setattr(screen_stream, "bluetooth_address", lambda: "192.168.44.2")
+    said = surface_mod.act("status")
+    assert "127.0.0.1:8090" in said and "USB cable" in said, said
+    assert "192.168.44.2" not in said, said
+
+
+def test_start_tells_the_stream_which_road_it_was_given(monkeypatch):
+    """The process is told, not left to probe again and disagree with the page."""
+    from shani_link import screen_stream
+    monkeypatch.setattr(screen_stream, "gstreamer_ready", lambda: (True, ""))
+    monkeypatch.setattr(screen_stream, "usb_ready", lambda: (True, ""))
+    monkeypatch.setattr(screen_stream, "bluetooth_address", lambda: "192.168.44.2")
+    seen = {}
+
+    class Proc:
+        def __init__(self, argv, **kw):
+            seen["env"] = kw["env"]
+            seen["argv"] = argv
+
+        def poll(self):
+            return None
+
+    monkeypatch.setattr(surface_mod.subprocess, "Popen", Proc)
+    monkeypatch.setitem(surface_mod._PROC, "proc", None)
+    assert "http://127.0.0.1:8090" in surface_mod.act("start")
+    assert seen["env"]["SHANI_LINK_SCREEN_TRANSPORT"] == "usb", seen["env"]
+    assert seen["argv"][1:] == ["-m", "shani_link.screen_stream"], seen["argv"]
+
+
+def test_a_stream_that_ended_says_the_last_thing_it_did(monkeypatch):
+    """The phone shows a frozen picture; the page has to know why."""
+    from shani_link import screen_stream
+    monkeypatch.setattr(screen_stream, "gstreamer_ready", lambda: (True, ""))
+    monkeypatch.setattr(screen_stream, "usb_ready", lambda: (False, "no Android device on a cable"))
+    monkeypatch.setattr(screen_stream, "bluetooth_address", lambda: "192.168.44.2")
+    log = surface_mod.log_path()
+    log.parent.mkdir(parents=True, exist_ok=True)
+    log.write_text("screen stream: http://192.168.44.2:8090\n"
+                   "the screen share was ended on this computer; press Start to ask again\n",
+                   encoding="utf-8")
+
+    class Dead:
+        def poll(self):
+            return 0
+
+    monkeypatch.setitem(surface_mod._PROC, "proc", Dead())
+    said = surface_mod.act("status")
+    assert said.startswith("The stream has stopped"), said
+    assert "press Start" in said, said
+    assert surface_mod._PROC.get("proc") is None, "a finished stream must not be reported as running"
+
+
+def test_a_running_stream_is_reported_as_running(monkeypatch):
+    """Not "cannot be shared right now": it is sharing, and the phone has the picture."""
+    class Alive:
+        def poll(self):
+            return None
+
+    monkeypatch.setitem(surface_mod._PROC, "proc", Alive())
+    monkeypatch.setitem(surface_mod._PROC, "where", "http://127.0.0.1:8090")
+    said = surface_mod.act("status")
+    assert "right now" in said and "127.0.0.1:8090" in said, said
+    monkeypatch.setitem(surface_mod._PROC, "proc", None)
 
 
 def test_start_runs_the_stream_and_stop_ends_that_process(monkeypatch):
     """The stream is its own process, started once and stopped by its handle."""
     from shani_link import screen_stream
     monkeypatch.setattr(screen_stream, "gstreamer_ready", lambda: (True, ""))
+    monkeypatch.setattr(screen_stream, "usb_ready", lambda: (False, "no Android device on a cable"))
     monkeypatch.setattr(screen_stream, "bluetooth_address", lambda: "192.168.44.2")
     started = []
 

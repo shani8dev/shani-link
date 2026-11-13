@@ -20,6 +20,9 @@ case "$1 $2" in
   "shell dumpsys") printf 'Current Battery Service state:\n  AC powered: false\n  USB powered: true\n  level: 76\n' ;;
   "shell df") printf 'Filesystem Size Used Avail Use%% Mounted\n/dev/fuse 110G 40G 70G 37%% /storage/emulated\n' ;;
   "shell pm") printf 'package:com.whatsapp\npackage:org.mozilla.firefox\n' ;;
+  "shell wm") if [ "$3" = "size" ]; then
+                printf 'Physical size: 1080x2400\nOverride size: 1080x2340\n'
+              fi ;;
   "exec-out screencap") printf '\211PNG\r\n\032\nfake' ;;
   "shell am") echo "Starting: Intent { act=android.intent.action.VIEW dat=$7 }" ;;
   push*) echo "1 file pushed" ;;
@@ -68,6 +71,20 @@ def test_the_screenshot_goes_to_pictures_by_default(fake_adb):
     out = ad.screenshot("R58N123")
     assert out.startswith("Saved the phone's screen to " + str(fake_adb / "Pictures" / "phone-"))
     assert len(list((fake_adb / "Pictures").glob("phone-*.png"))) == 1
+
+
+def test_the_stream_gets_one_ready_phone_and_the_size_it_sees(fake_adb):
+    """The two questions a program asks rather than a person: which phone, and how big."""
+    assert ad.ready_serial() == ("R58N123", "")
+    # the override is what the person sees, so it wins over the physical panel
+    assert ad.display_size("R58N123") == (1080, 2340)
+
+
+def test_a_phone_that_will_not_say_its_size_gets_none(monkeypatch):
+    monkeypatch.setattr(ad, "_shell", lambda *_a: "null")
+    assert ad.display_size("R58N123") is None
+    monkeypatch.setattr(ad, "_shell", lambda *_a: "Physical size: junk")
+    assert ad.display_size("R58N123") is None
 
 
 def test_paths_outside_home_are_refused_for_the_tool(fake_adb, tmp_path):

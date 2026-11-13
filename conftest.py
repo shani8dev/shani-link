@@ -17,3 +17,6 @@ os.environ["XDG_CONFIG_HOME"] = tempfile.mkdtemp(prefix="shani-link-test-config-
 # somebody's real history
 os.environ["XDG_DATA_HOME"] = tempfile.mkdtemp(prefix="shani-link-test-data-")
 os.environ["XDG_CACHE_HOME"] = tempfile.mkdtemp(prefix="shani-link-test-cache-")
+# nor its state: the screen stream writes its own log there, and a test that
+# starts (or fakes) a stream must not leave one in the person's state folder
+os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp(prefix="shani-link-test-state-")
