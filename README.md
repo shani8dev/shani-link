@@ -31,7 +31,9 @@ finds, and every page says plainly what it needs when something is missing.
   the phone's own size, or over the phone's Bluetooth network when adb cannot
   reach it. Share the whole screen or **one window** (the desktop asks which);
   on niri the window can then be changed with the dynamic cast target, without
-  asking again. **Touch and type** (off until you turn it on) makes fingers, a
+  asking again. The same portal stream can be **recorded to a file**
+  (`python3 -m shani_link.screen_stream --record out.webm`, add `--window` for
+  one window). **Touch and type** (off until you turn it on) makes fingers, a
   stylus and the phone's keyboard drive the desktop through virtual devices; a
   window with `block-out-from "screencast"` is black on the phone. On the phone
   the same page can **play the desktop's sound**, and **lend the desktop its

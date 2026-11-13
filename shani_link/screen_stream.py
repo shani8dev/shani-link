@@ -726,6 +726,21 @@ def pipeline_description(fd: int, node: int, width: int, height: int, fps: int,
             + codec.pipeline_tail(width, height, fps, bitrate))
 
 
+def record_pipeline(fd: int, node: int, fps: int, bitrate: int, path: str) -> str:
+    """The portal's stream into a file, at the source's own size.
+
+    No caps: a window is not 1920x1080, and forcing a size would stretch it. The
+    encoder takes what the portal gives and keeps the aspect. The muxer is the
+    streamable one the live stream uses, so the file has no seek index until it
+    is remuxed - the same bytes, the same players.
+    """
+    return (f"pipewiresrc fd={fd} path={node} do-timestamp=true keepalive-time=1000 ! "
+            f"videoconvert ! "
+            f"vp8enc deadline=1 cpu-used=8 target-bitrate={bitrate} "
+            f"keyframe-max-dist={fps * 2} end-usage=cbr ! "
+            f"webmmux streamable=true ! filesink location={path}")
+
+
 class Stream:
     """Everything one stream needs: the portal's node, the size, the codec.
 
@@ -1097,6 +1112,8 @@ def _arguments(argv=None) -> argparse.Namespace:
                         help="stop after this many seconds (default: run until Ctrl+C)")
     parser.add_argument("--window", action="store_true",
                         help="share one window (the person picks it) instead of a monitor")
+    parser.add_argument("--record", metavar="FILE",
+                        help="record the portal's stream to FILE (webm) and exit")
     parser.add_argument("--touch", action="store_true",
                         help="let fingers on the phone tap and drag on this computer "
                              "(also SHANI_LINK_SCREEN_TOUCH=1)")
@@ -1186,6 +1203,44 @@ def _run(host: str, width: int, height: int, fps: int, bitrate: int, codec: Code
         cast.close()
 
 
+def _record(path: str, window: bool, seconds: float) -> None:
+    """Record the portal's stream to a file, and stop when the person does."""
+    import gi
+    gi.require_version("Gst", "1.0")
+    from gi.repository import Gst
+    Gst.init(None)
+    cast = ScreenCast()
+    try:
+        fd, node = cast.start(window=window)                  # the person answers here
+        pipe = Gst.parse_launch(record_pipeline(fd, node, BLUETOOTH_FPS, BLUETOOTH_BITRATE, path))
+        pipe.set_state(Gst.State.PLAYING)
+        print(f"Recording to {path}", flush=True)
+        deadline = None if seconds <= 0 else threading.Timer(seconds, lambda: pipe.send_event(
+            Gst.Event.new_eos()))
+        if deadline is not None:
+            deadline.start()
+        try:
+            while True:
+                message = pipe.get_bus().timed_pop_filtered(500 * Gst.MSECOND,
+                                                            Gst.MessageType.ERROR | Gst.MessageType.EOS)
+                if message is not None:
+                    if message.type == Gst.MessageType.ERROR:
+                        print(f"Recording failed: {message.parse_error()[0].message}", flush=True)
+                    break
+                if cast.closed:
+                    print("The screen share ended on this computer.", flush=True)
+                    break
+        except KeyboardInterrupt:
+            pass
+        finally:
+            if deadline is not None:
+                deadline.cancel()
+            pipe.send_event(Gst.Event.new_eos())
+            pipe.set_state(Gst.State.NULL)
+    finally:
+        cast.close()
+
+
 def _serve(args: argparse.Namespace, codec: Codec, surface, pen_surface, keyboard,
            sound_sink: str = "", window: bool = False) -> None:
     transport = pick_transport(args.transport)
@@ -1228,6 +1283,13 @@ def main() -> None:
     ready, why = gstreamer_ready(args.codec)
     if not ready:
         sys.exit(why)
+
+    if args.record:
+        path = os.path.abspath(os.path.expanduser(args.record))
+        if not path.endswith(".webm"):
+            path += ".webm"
+        _record(path, args.window, args.seconds)
+        return
 
     wanted = args.touch or os.environ.get("SHANI_LINK_SCREEN_TOUCH", "").lower() in ("1", "true", "yes")
     surface, pen_surface, keyboard = _input_surfaces(wanted)

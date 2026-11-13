@@ -355,3 +355,13 @@ def test_an_empty_frame_is_how_the_phone_stops_that_device(monkeypatch):
         assert made and made[0].closed == 1, "an empty post must close the encoder"
     finally:
         streamer.stop()
+
+
+# --- recording the same stream to a file ---------------------------------------
+
+def test_the_record_pipeline_is_the_webm_tail_into_a_file():
+    line = ss.record_pipeline(9, 42, 8, 400_000, "/tmp/x.webm")
+    assert "pipewiresrc fd=9 path=42" in line
+    assert "vp8enc" in line and "webmmux streamable=true" in line
+    assert "filesink location=/tmp/x.webm" in line
+    assert "appsink" not in line
