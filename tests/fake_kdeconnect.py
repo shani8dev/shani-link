@@ -207,6 +207,30 @@ class FakePhone:
         except OSError:
             pass
 
+    def push_clipboard(self, port: int, text: str, device_id: "str | None" = None) -> None:
+        """Copy on the phone: open a link to the computer's control port, as
+        `push` does, and send the clipboard packet kdeconnect-kde's plugin sends."""
+        server_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        server_ctx.load_cert_chain(*_cert(self._dir, self.device_id))
+        ident = _identity(device_id=device_id or self.device_id)
+        raw = socket.create_connection(("127.0.0.1", port), timeout=10)
+        raw.sendall((json.dumps(ident) + "\n").encode())
+        try:
+            tls = server_ctx.wrap_socket(raw, server_side=True)
+        except (OSError, ssl.SSLError):
+            raw.close()
+            return
+        stream = tls.makefile("rwb")
+        for packet in (ident, {"id": 4, "type": "kdeconnect.clipboard",
+                               "body": {"content": text, "timestamp": int(time.time() * 1000)}}):
+            stream.write((json.dumps(packet) + "\n").encode())
+            stream.flush()
+        time.sleep(1.0)
+        try:
+            tls.close()
+        except OSError:
+            pass
+
     def got(self, kind: str) -> "list[dict]":
         return [p for p in self.received if p.get("type") == kind]
 

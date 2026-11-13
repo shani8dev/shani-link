@@ -27,6 +27,9 @@ KEYS = (
     # files the paired phone sends over Wi-Fi (lan_receive.py): off by default,
     # since it opens KDE Connect's ports in the firewall while on
     "phone-lan-receive-enabled",
+    # one clipboard with the paired phone (clipboard_sync.py): off by default -
+    # a clipboard holds passwords and private things
+    "phone-clipboard-sync-enabled",
 )
 #: the ones on unless turned off: music control from Bluetooth remotes, and the
 #: computer's own mobile modem ringing (it is this computer's phone line, as

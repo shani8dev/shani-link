@@ -60,6 +60,9 @@ LABELS = {
     "phone-lan-receive-enabled": (
         "Receive files from your phone over Wi-Fi",
         "Your paired phone can share files to this computer (KDE Connect); opens its ports in the firewall until you turn this off or restart"),
+    "phone-clipboard-sync-enabled": (
+        "Share the clipboard with your phone",
+        "Copy on one, paste on the other (KDE Connect); what a password manager marks secret is never sent"),
     "bluetooth-media-remote-enabled": (
         "Media keys from Bluetooth",
         "Headphones' and car kits' play/pause and skip buttons control music here"),

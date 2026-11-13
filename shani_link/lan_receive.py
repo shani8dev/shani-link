@@ -46,10 +46,14 @@ def firewall(open_it: bool) -> "tuple[bool, str]":
 
 
 class LanReceiver:
-    def __init__(self, settings, folder: "str | None" = None, port: int = lan_link.UDP_PORT) -> None:
+    """Listens while files or the clipboard from the phone are on (either switch);
+    each packet is checked against its own switch as it arrives."""
+
+    def __init__(self, settings, folder: "str | None" = None, port: int = lan_link.UDP_PORT, clipboard=None) -> None:
         self.settings = settings
         self.folder = folder or downloads()
         self.port = port
+        self.clipboard = clipboard          # clipboard_sync.ClipboardSync, or None
         self._rx: "lan_link.Receiver | None" = None
         self._stop = threading.Event()
 
@@ -62,7 +66,9 @@ class LanReceiver:
 
     def _watch(self) -> None:
         while not self._stop.is_set():
-            want = bool(self.settings.get_bool(KEY, False)) and bool(lan_link.paired_device().get("deviceId"))
+            from shani_link.clipboard_sync import KEY as CLIP_KEY
+            want = (bool(self.settings.get_bool(KEY, False)) or (self.clipboard is not None and bool(self.settings.get_bool(CLIP_KEY, False)))) \
+                and bool(lan_link.paired_device().get("deviceId"))
             if want and self._rx is None:
                 self._on()
             elif not want and self._rx is not None:
@@ -73,7 +79,8 @@ class LanReceiver:
         opened, why = firewall(True)
         if not opened:
             logger.info("the firewall was not opened for KDE Connect: %s", why)
-        rx = lan_link.Receiver(self.folder, self._arrived, port=self.port)
+        rx = lan_link.Receiver(self.folder, self._file, port=self.port,
+                               on_clipboard=self.clipboard.received if self.clipboard is not None else None)
         started, why = rx.start()
         if not started:
             logger.info("could not listen for the phone: %s", why)
@@ -87,6 +94,17 @@ class LanReceiver:
             self._rx.stop()
             self._rx = None
             firewall(False)
+
+    def _file(self, path: str, why: str) -> None:
+        # the files switch may be off while the receiver listens for the clipboard
+        if self.settings.get_bool(KEY, False):
+            self._arrived(path, why)
+        elif path:
+            # taken by the protocol before the switch was read: not kept
+            try:
+                os.remove(path)
+            except OSError:
+                pass
 
     def _arrived(self, path: str, why: str) -> None:
         name = os.path.basename(path)

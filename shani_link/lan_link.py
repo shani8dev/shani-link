@@ -946,9 +946,10 @@ class Receiver:
     is taken without asking - and `on_file` is how the person hears of it.
     """
 
-    def __init__(self, folder, on_file, port: int = UDP_PORT, paired_id=None) -> None:
+    def __init__(self, folder, on_file, port: int = UDP_PORT, paired_id=None, on_clipboard=None) -> None:
         self.folder = folder
-        self.on_file = on_file
+        self.on_file = on_file              # None: files are not taken (only the clipboard is on)
+        self.on_clipboard = on_clipboard    # the phone copied text (kdeconnect.clipboard)
         self.port = port
         self.paired_id = paired_id
         self._listener: "Optional[socket.socket]" = None
@@ -1019,7 +1020,12 @@ class Receiver:
                     if (packet.get("body") or {}).get("deviceId") != paired:
                         return                        # the TLS identity must be the same phone
                     continue
-                if kind == "kdeconnect.share.request" and packet.get("payloadTransferInfo"):
+                if kind in (CLIPBOARD_TYPE, CLIPBOARD_CONNECT_TYPE) and self.on_clipboard is not None:
+                    content = (packet.get("body") or {}).get("content")
+                    if isinstance(content, str) and content:
+                        self.on_clipboard(content)
+                    continue
+                if kind == "kdeconnect.share.request" and packet.get("payloadTransferInfo") and self.on_file is not None:
                     name = (packet.get("body") or {}).get("filename") or "file"
                     ok, where = receive_payload(host, int(packet["payloadTransferInfo"]["port"]),
                                                 int(packet.get("payloadSize") or 0), self.folder, name)
@@ -1039,6 +1045,27 @@ def _human(size: int) -> str:
             return f"{size:.0f} {unit}" if unit == "B" else f"{size:.1f} {unit}"
         size /= 1024.0
     return f"{size:.1f} GB"
+
+
+#: KDE Connect's clipboard plugin: the text one side copied ("connect" is the
+#: same, sent when a link opens, with a timestamp the other side may ignore).
+CLIPBOARD_TYPE = "kdeconnect.clipboard"
+CLIPBOARD_CONNECT_TYPE = "kdeconnect.clipboard.connect"
+
+
+def send_clipboard(host: str, text: str, tcp_port: int = UDP_PORT,
+                   timeout: float = 10.0) -> "tuple[bool, str]":
+    """What was copied here, to the paired phone's clipboard. `(sent, why-not)`."""
+    link, why = _link(host, timeout=timeout, tcp_port=tcp_port)
+    if link is None:
+        return False, why
+    try:
+        link.send({"type": CLIPBOARD_TYPE, "body": {"content": text}})
+        return True, ""
+    except Exception as exc:  # noqa: BLE001 - a reason, not a traceback
+        return False, f"{type(exc).__name__}: {exc}"
+    finally:
+        link.close()
 
 
 #: `_link`'s default: talk only to the phone `pair` stored.

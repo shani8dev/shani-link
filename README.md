@@ -41,6 +41,7 @@ finds, and every page says plainly what it needs when something is missing.
 | Watch dashboard | A MoYoung watch or band (the ones the Da Fit app uses). Other Bluetooth Low Energy devices show their standard details (battery, firmware) |
 | Android phone tools | A USB cable and USB debugging turned on in the phone's Developer options |
 | Phone link (files over Wi-Fi) | The KDE Connect app on the phone, on the same Wi-Fi; to receive, turn on "Receive files from your phone over Wi-Fi" (Background) - it opens KDE Connect's ports in the firewall until turned off or a restart |
+| Phone link (one clipboard) | The KDE Connect app on the phone, paired; turn on "Share the clipboard with your phone" (Background, off by default). Copy on one, paste on the other; what a password manager marks secret is never sent, and the shell's clipboard history says what came from the phone |
 | This screen on your phone | The phone's Bluetooth tethering, and GStreamer on this computer |
 | FM radio | An RTL-SDR USB stick (RTL2832U) and `rtl_fm` (rtl-sdr) to listen live, played through PipeWire (`pw-play`); recordings play without the stick |
 | NFC | A USB NFC reader that works with libnfc (for example an ACR122U) |

@@ -331,7 +331,10 @@ class Service:
         cfg = self.settings
         self.devices = [IncomingCallWatcher(cfg), ModemWatcher(cfg), ObexReceiver(cfg),
                         WatchCompanion(cfg, on_voice=lambda start: self.device_event("watch", "voice", start=start)),
-                        RemoteService(cfg), MessageWatcher(cfg), LanReceiver(cfg)]
+                        RemoteService(cfg), MessageWatcher(cfg)]
+        from shani_link.clipboard_sync import ClipboardSync
+        clipboard = ClipboardSync(cfg)
+        self.devices += [clipboard, LanReceiver(cfg, clipboard=clipboard)]
         if cfg.get_bool("bluetooth-media-remote-enabled", True):
             from shani_link.avrcp_target import AvrcpTarget
             self.devices.append(AvrcpTarget())
