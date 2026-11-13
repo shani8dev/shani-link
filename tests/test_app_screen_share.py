@@ -143,6 +143,38 @@ def test_the_page_offers_to_connect_a_phone(monkeypatch):
     assert fired[0][1].unpack() == "android", fired
 
 
+def test_the_touch_switch_is_on_the_page_and_off_by_default(monkeypatch):
+    page, surface = _build()
+    switch = getattr(surface, "_touch", None)
+    assert switch is not None, "no touch switch on the page"
+    assert switch.toggle.get_active() is False
+    monkeypatch.setitem(surface_mod._TOUCH, "on", False)
+    switch.toggle.set_active(True)
+    assert surface_mod._TOUCH["on"] is True, "the switch must reach the next stream"
+    monkeypatch.setitem(surface_mod._TOUCH, "on", False)
+
+
+def test_start_passes_the_touch_switch_to_the_stream(monkeypatch):
+    from shani_link import screen_stream
+    monkeypatch.setattr(screen_stream, "gstreamer_ready", lambda: (True, ""))
+    monkeypatch.setattr(screen_stream, "phone_serial", lambda: ("R5CT10", ""))
+    seen = {}
+
+    class Proc:
+        def __init__(self, argv, **kw):
+            seen["env"] = kw["env"]
+
+        def poll(self):
+            return None
+
+    monkeypatch.setattr(surface_mod.subprocess, "Popen", Proc)
+    monkeypatch.setitem(surface_mod._PROC, "proc", None)
+    monkeypatch.setitem(surface_mod._TOUCH, "on", True)
+    surface_mod.act("start")
+    assert seen["env"]["SHANI_LINK_SCREEN_TOUCH"] == "1", seen["env"]
+    monkeypatch.setitem(surface_mod._TOUCH, "on", False)
+
+
 def test_a_machine_that_cannot_share_says_what_is_missing(monkeypatch):
     """Not started, and the reason - the engine names the missing package."""
     from shani_link import screen_stream

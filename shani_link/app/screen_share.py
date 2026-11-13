@@ -51,6 +51,10 @@ _PROC: "dict[str, Optional[subprocess.Popen]]" = {}
 #: What the stream last said. One file, overwritten by every start.
 _LOG = "screen-stream.log"
 
+#: Whether the next stream listens for fingers. A switch on the page, not a
+#: setting: it is about this session's phone, and it is off until pressed.
+_TOUCH = {"on": False}
+
 
 def log_path():
     return paths.state_home() / "shani-link" / _LOG
@@ -118,6 +122,7 @@ def act(action: str) -> str:
     env = dict(os.environ)
     env["PYTHONPATH"] = package_root + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
     env["SHANI_LINK_SCREEN_TRANSPORT"] = transport
+    env["SHANI_LINK_SCREEN_TOUCH"] = "1" if _TOUCH["on"] else "0"
     try:
         log = log_path()
         log.parent.mkdir(parents=True, exist_ok=True)
@@ -128,7 +133,9 @@ def act(action: str) -> str:
         return f"The stream would not start ({exc})."
     _PROC["where"] = detail
     return (f"Sharing the screen on {detail}. Open that address on the phone. "
-            "The desktop asked you first and will ask again next time.")
+            "The desktop asked you first and will ask again next time."
+            + (" Fingers, a stylus and the keyboard on the phone can drive this computer."
+               if _TOUCH["on"] else ""))
 
 
 def _status() -> str:
@@ -170,6 +177,17 @@ class _ShareSurface:
         _report_group.set_visible(False)          # until something has happened
         self._report_group = _report_group
         self._body.append(_report_group)
+
+        # Off until pressed: a stream that swallowed every tap would be worse
+        # than one that does not, and a palm on the phone is not a click.
+        self._touch = common.switch_row(
+            "Touch and type on the phone",
+            "Fingers, a stylus and the phone's keyboard on this computer "
+            "(needs the input group)",
+            active=False,
+            on_changed=lambda state: _TOUCH.__setitem__("on", bool(state)))
+        self._body.append(self._touch)
+
         self._busy = False
 
     def _buttons(self) -> Gtk.Widget:

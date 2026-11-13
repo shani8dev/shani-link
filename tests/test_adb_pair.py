@@ -32,6 +32,9 @@ def phone(tmp_path, monkeypatch):
 
     p = Phone()
     p.set(devices=[], mdns=[], code="123456", connect="192.168.1.20:41000")
+    # The phone's own advertisements are the fake adb's `mdns` list; the real
+    # DNS-SD browse must not reach the developer's network from a test.
+    monkeypatch.setattr(adb_pair.dnssd, "browse", lambda *a, **k: [])
     return p
 
 
@@ -75,6 +78,24 @@ def test_qr_pairing_finds_the_phone_that_scanned(phone):
 def test_nobody_scanning_times_out(phone):
     name, _pw, _text = adb_pair.qr_secret()
     assert adb_pair.wait_for_pairing_service(name, timeout=1.5) is None
+
+
+def test_the_address_can_come_from_our_own_browse(phone, monkeypatch):
+    """adb's mDNS backend is missing on Debian; the browser is not optional."""
+    from shani_link import mdns
+
+    def fake(service, **_kw):
+        if service != mdns.CONNECT:
+            return []
+        return [mdns.Service(name="adb-xyz", host="Pixel.local", port=41000,
+                             addresses={"192.168.1.20"})]
+
+    monkeypatch.setattr(adb_pair.dnssd, "browse", fake)
+    assert adb_pair.mdns_services() == [
+        {"name": "adb-xyz", "kind": "connect", "address": "192.168.1.20:41000"}]
+    phone.set(paired=True)                     # the fake adb only connects a paired phone
+    ok, why = adb_pair.connect_after_pairing("192.168.1.20:41000", timeout=2)
+    assert ok, why
 
 
 def test_bad_input_is_a_sentence_not_an_adb_call(phone):

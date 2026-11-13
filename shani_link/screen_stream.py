@@ -46,6 +46,7 @@ Bluetooth tethering is on.
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
 import re
@@ -58,6 +59,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Optional
 
 from shani_link import android
+from shani_link import touch
 
 logger = logging.getLogger(__name__)
 
@@ -419,17 +421,111 @@ def create_codec(name: str = "webm") -> Codec:
         raise ValueError(f"unknown codec {name!r}; one of {', '.join(CODECS)}") from None
 
 
-PAGE_WEBM = """<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Chronoa screen</title><style>body{margin:0;background:#000;color:#aaa;font:14px sans-serif}
-video{width:100vw;height:100vh;object-fit:contain}p{position:fixed;bottom:4px;left:8px;margin:0}</style></head>
-<body><video src="/stream" autoplay muted playsinline></video>
-<p>This computer's screen</p></body></html>""".encode()
+INPUT_CSS = """
+#touch{position:fixed;inset:0;display:none;touch-action:none;z-index:5}
+#type{position:fixed;left:0;right:0;bottom:0;display:none;gap:6px;padding:6px;
+background:#000b;z-index:6}
+#type input{flex:1;min-width:0;padding:8px 10px;border-radius:8px;border:1px solid #555;
+background:#111;color:#eee;font:16px sans-serif}
+#type button{display:none}
+"""
 
-PAGE_MJPEG = """<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Chronoa screen</title><style>body{margin:0;background:#000}img{width:100vw;height:100vh;
-object-fit:contain;display:block}</style></head>
-<body><img src="/stream" alt="This computer's screen"></body></html>""".encode()
+INPUT_JS = """
+const layer = document.getElementById("touch");
+const shown = document.querySelector("video,img");
+const points = new Map();
+let queued = 0;
+function send(path, body) {
+  fetch(path, {method: "POST", headers: {"Content-Type": "application/json"},
+               body: JSON.stringify(body || {}), keepalive: true}).catch(() => {});
+}
+function where(event) {
+  const box = shown.getBoundingClientRect();
+  const vw = shown.videoWidth || shown.naturalWidth || box.width;
+  const vh = shown.videoHeight || shown.naturalHeight || box.height;
+  const scale = Math.min(box.width / vw, box.height / vh);   // object-fit: contain
+  const w = vw * scale, h = vh * scale;
+  const left = box.left + (box.width - w) / 2, top = box.top + (box.height - h) / 2;
+  return {x: (event.clientX - left) / w, y: (event.clientY - top) / h};
+}
+function flush() {
+  queued = 0;
+  send("/touch", {points: [...points.values()]});
+}
+function queue() { if (!queued) queued = requestAnimationFrame(flush); }
+function penFrame(event, lift) {
+  const at = where(event);
+  send("/pen", {
+    x: at.x, y: at.y, pressure: event.pressure || 0,
+    tilt_x: event.tiltX || 0, tilt_y: event.tiltY || 0,
+    eraser: event.button === 5, lift: !!lift
+  });
+}
+for (const name of ["pointerdown", "pointermove", "pointerup", "pointercancel"]) {
+  layer.addEventListener(name, (event) => {
+    if (event.pointerType === "pen") {
+      if (name === "pointerdown") { layer.setPointerCapture(event.pointerId); penFrame(event); }
+      else if (name === "pointermove" && event.buttons) { penFrame(event); }
+      else if (name === "pointerup" || name === "pointercancel") { penFrame(event, true); }
+      event.preventDefault();
+      return;
+    }
+    if (name === "pointerdown") {
+      layer.setPointerCapture(event.pointerId);
+      const at = where(event);
+      points.set(event.pointerId, {id: event.pointerId, x: at.x, y: at.y,
+                                   pressure: event.pressure || 1});
+    } else if (name === "pointermove") {
+      const held = points.get(event.pointerId);
+      if (!held) return;
+      const at = where(event);
+      held.x = at.x; held.y = at.y; held.pressure = event.pressure || held.pressure;
+    } else {
+      points.delete(event.pointerId);
+    }
+    event.preventDefault();
+    queue();
+  }, {passive: false});
+}
 
+const kind = document.getElementById("kind");
+let typed = "";
+kind.addEventListener("input", () => {
+  const value = kind.value;
+  if (value.length > typed.length) send("/key", {text: value.slice(typed.length)});
+  else if (value.length < typed.length) send("/key", {backspace: typed.length - value.length});
+  typed = value;
+});
+kind.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") { event.preventDefault(); send("/key", {text: "\n"}); }
+});
+
+fetch("/info").then((r) => r.json()).then((info) => {
+  if (info.touch || info.pen) layer.style.display = "block";
+  if (info.keyboard) document.getElementById("type").style.display = "flex";
+}).catch(() => {});
+"""
+
+
+def _page(media: str, extra_css: str = "") -> bytes:
+    """The viewer: the picture, the touch layer, the pen and the typing bar."""
+    return ("<!doctype html><html><head>"
+            '<meta name="viewport" content="width=device-width,initial-scale=1">'
+            "<title>Chronoa screen</title><style>"
+            "body{margin:0;background:#000;color:#aaa;font:14px sans-serif}"
+            "video,img{width:100vw;height:100vh;object-fit:contain;display:block}"
+            + extra_css + INPUT_CSS + "</style></head><body>"
+            + media
+            + '<div id="touch"></div>'
+            + '<div id="type"><input id="kind" placeholder="Type on this computer…" '
+              'autocomplete="off" autocapitalize="off" spellcheck="false">'
+              '<button tabindex="-1">·</button></div>'
+            + "<script>" + INPUT_JS + "</script></body></html>").encode()
+
+
+PAGE_WEBM = _page('<video src="/stream" autoplay muted playsinline></video>',
+                  "p{position:fixed;bottom:4px;left:8px;margin:0;z-index:4}")
+PAGE_MJPEG = _page('<img src="/stream" alt="This computer screen">')
 
 # --- encoding and serving ------------------------------------------------------
 
@@ -467,9 +563,13 @@ class StreamServer:
     worse than two that cannot.
     """
 
-    def __init__(self, stream: Stream, host: str, port: int = PORT, on_fatal=None) -> None:
+    def __init__(self, stream: Stream, host: str, port: int = PORT, on_fatal=None,
+                 touch_surface=None, pen_surface=None, keyboard=None) -> None:
         self.stream, self.host, self.port = stream, host, port
         self.on_fatal = on_fatal
+        self.touch_surface = touch_surface
+        self.pen_surface = pen_surface
+        self.keyboard = keyboard
         self.httpd: Optional[ThreadingHTTPServer] = None
 
     def serve(self) -> None:
@@ -492,6 +592,19 @@ class StreamServer:
                     self.end_headers()
                     self.wfile.write(body)
                     return
+                if self.path == "/info":
+                    # The page asks before it listens: a stream started without
+                    # touch must not swallow taps that were meant for a scroll.
+                    body = json.dumps({"touch": owner.touch_surface is not None,
+                                       "pen": owner.pen_surface is not None,
+                                       "keyboard": owner.keyboard is not None}).encode()
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.send_header("Cache-Control", "no-store")
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
                 if self.path != "/stream":
                     self.send_error(404)
                     return
@@ -500,6 +613,42 @@ class StreamServer:
                 self.send_header("Cache-Control", "no-store")
                 self.end_headers()
                 self._pump()
+
+            def do_POST(self):
+                """Touch, pen or keys: one small JSON frame from the phone."""
+                if self.path == "/touch" and owner.touch_surface is not None:
+                    self._read_json(lambda payload: owner.touch_surface.update(
+                        payload.get("points") or []))
+                elif self.path == "/pen" and owner.pen_surface is not None:
+                    self._read_json(owner.pen_surface.update)
+                elif self.path == "/key" and owner.keyboard is not None:
+                    self._read_json(self._type)
+                else:
+                    self.send_error(404)
+
+            def _type(self, payload) -> None:
+                text = payload.get("text")
+                if text:
+                    owner.keyboard.type(str(text))
+                count = payload.get("backspace")
+                if count:
+                    owner.keyboard.backspace(int(count))
+
+            def _read_json(self, apply) -> None:
+                try:
+                    length = int(self.headers.get("Content-Length") or 0)
+                    payload = json.loads(self.rfile.read(length) or b"{}")
+                except (ValueError, TypeError):
+                    self.send_error(400)
+                    return
+                except OSError:
+                    return                       # the phone hung up mid-frame
+                try:
+                    apply(payload)
+                except OSError:
+                    return                       # the device went away mid-frame
+                self.send_response(204)
+                self.end_headers()
 
             def _pump(self) -> None:
                 """Encode until the viewer leaves, the encoder stops twice, or the share ends."""
@@ -587,7 +736,45 @@ def _arguments(argv=None) -> argparse.Namespace:
                         help="webm (a <video>) or mjpeg (an <img>, no JavaScript)")
     parser.add_argument("--seconds", type=float, default=0.0,
                         help="stop after this many seconds (default: run until Ctrl+C)")
+    parser.add_argument("--touch", action="store_true",
+                        help="let fingers on the phone tap and drag on this computer "
+                             "(also SHANI_LINK_SCREEN_TOUCH=1)")
     return parser.parse_args(argv)
+
+
+def _input_surfaces(enabled: bool):
+    """The virtual devices the phone can drive, or Nones with the reasons.
+
+    Touch is off unless asked for: a stream that swallowed every tap would be
+    worse than one that does not, and a palm on the phone is not a click.
+    """
+    if not enabled:
+        return None, None, None
+    ok, why = touch.available()
+    if not ok:
+        print(f"Touch is off: {why}", flush=True)
+        return None, None, None
+    surface = pen = board = None
+    try:
+        screen = touch.TouchScreen()
+        screen.open()
+        surface = touch.TouchSurface(screen)
+    except touch.TouchUnavailable as exc:
+        print(f"Touch is off: {exc}", flush=True)
+    try:
+        device = touch.Pen()
+        device.open()
+        pen = touch.PenSurface(device)
+    except touch.TouchUnavailable as exc:
+        print(f"The pen is off: {exc}", flush=True)
+    try:
+        board = touch.Keyboard()
+        board.open()
+    except touch.TouchUnavailable as exc:
+        print(f"Typing is off: {exc}", flush=True)
+    if surface is not None or pen is not None or board is not None:
+        print("Touch and typing are on: the phone drives this computer", flush=True)
+    return surface, pen, board
 
 
 def _portal_problem(exc: BaseException) -> str:
@@ -600,7 +787,7 @@ def _portal_problem(exc: BaseException) -> str:
 
 
 def _run(host: str, width: int, height: int, fps: int, bitrate: int, codec: Codec,
-         seconds: float = 0.0) -> None:
+         seconds: float = 0.0, touch_surface=None, pen_surface=None, keyboard=None) -> None:
     """Open the portal, serve one stream, and stay until it ends."""
     cast = ScreenCast()
     try:
@@ -613,7 +800,8 @@ def _run(host: str, width: int, height: int, fps: int, bitrate: int, codec: Code
             print(f"Stopping: {said}", flush=True)
             done.set()
 
-        server = StreamServer(stream, host, on_fatal=fatal)
+        server = StreamServer(stream, host, on_fatal=fatal, touch_surface=touch_surface,
+                              pen_surface=pen_surface, keyboard=keyboard)
         threading.Thread(target=server.serve, daemon=True, name="screen-stream").start()
         print(f"Open http://{host}:{PORT} on the phone", flush=True)
         timer = None
@@ -635,14 +823,7 @@ def _run(host: str, width: int, height: int, fps: int, bitrate: int, codec: Code
         cast.close()
 
 
-def main() -> None:
-    logging.basicConfig(level=logging.INFO, format="%(message)s")
-    args = _arguments()
-    codec = create_codec(args.codec)
-    ready, why = gstreamer_ready(args.codec)
-    if not ready:
-        sys.exit(why)
-
+def _serve(args: argparse.Namespace, codec: Codec, surface, pen_surface, keyboard) -> None:
     transport = pick_transport(args.transport)
 
     if transport in ("usb", "wifi"):
@@ -658,7 +839,8 @@ def main() -> None:
             if note:
                 print(note, flush=True)
             try:
-                _run(USB_HOST, width, height, USB_FPS, USB_BITRATE, codec, args.seconds)
+                _run(USB_HOST, width, height, USB_FPS, USB_BITRATE, codec, args.seconds,
+                     surface, pen_surface, keyboard)
             except Exception as exc:  # noqa: BLE001 - the portal is a desktop service
                 print(f"Stopping: {_portal_problem(exc)}", flush=True)
                 sys.exit(1)
@@ -669,10 +851,28 @@ def main() -> None:
         sys.exit("No Bluetooth network: turn on Bluetooth tethering on the phone and connect to it first.")
     try:
         _run(host, BLUETOOTH_WIDTH, BLUETOOTH_HEIGHT, BLUETOOTH_FPS, BLUETOOTH_BITRATE,
-             codec, args.seconds)
+             codec, args.seconds, surface, pen_surface, keyboard)
     except Exception as exc:  # noqa: BLE001
         print(f"Stopping: {_portal_problem(exc)}", flush=True)
         sys.exit(1)
+
+
+def main() -> None:
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    args = _arguments()
+    codec = create_codec(args.codec)
+    ready, why = gstreamer_ready(args.codec)
+    if not ready:
+        sys.exit(why)
+
+    wanted = args.touch or os.environ.get("SHANI_LINK_SCREEN_TOUCH", "").lower() in ("1", "true", "yes")
+    surface, pen_surface, keyboard = _input_surfaces(wanted)
+    try:
+        _serve(args, codec, surface, pen_surface, keyboard)
+    finally:
+        for device in (surface, pen_surface, keyboard):
+            if device is not None:
+                device.close()
 
 
 if __name__ == "__main__":

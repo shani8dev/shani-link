@@ -20,6 +20,11 @@ help doing it. The two ways in are both adb's own:
   `adb connect` to it makes the phone a `device`. A paired phone reconnects
   later without pairing again.
 
+**Finding the address is ours, not adb's.** `adb mdns services` is the obvious
+call and it is empty on Debian's `android-tools` (the subcommand exists, the
+backend does not), so `shani_link.mdns` asks the same question itself and the
+two answers are merged. Nothing about the handshake changes.
+
 Everything here is a short `adb` call on the caller's thread - the window runs
 them off the main loop. The test double is `tools/fake_adb.py`, put first on
 PATH; no test talks to a real phone.
@@ -33,6 +38,8 @@ import string
 import subprocess
 import time
 from typing import Dict, List, Optional, Tuple
+
+from shani_link import mdns as dnssd
 
 TIMEOUT = 20
 PAIRING = "_adb-tls-pairing._tcp"
@@ -93,19 +100,35 @@ def mdns_services() -> List[Dict[str, str]]:
 
     `kind` is "pairing" (a phone showing a pairing code or scanning our QR) or
     "connect" (a phone with wireless debugging on, ready for `adb connect`).
+
+    Our own browse comes first (`shani_link.mdns`): Debian's `adb` ships the
+    `mdns` subcommand without a backend, so it answers an empty list on a
+    network where the phone is plainly advertising - which is what made pairing
+    look impossible. `adb mdns services` is still asked, for an adb that has the
+    backend, and its answers are merged in.
     """
+    found: Dict[tuple, Dict[str, str]] = {}
+    for service, kind in ((dnssd.PAIRING, "pairing"), (dnssd.CONNECT, "connect")):
+        try:
+            found_services = dnssd.browse(service, timeout=1.0)
+        except OSError:
+            found_services = []            # no socket for it: adb's answer may still do
+        for entry in found_services:
+            for address in entry.addresses:
+                key = (kind, entry.name, address, entry.port)
+                found[key] = {"name": entry.name, "kind": kind,
+                              "address": f"{address}:{entry.port}"}
+
     code, out = _adb("mdns", "services", timeout=10)
-    if code != 0:
-        return []
-    found = []
-    for line in out.splitlines():
-        m = re.match(r"^(\S+)\s+(_adb-tls-(?:pairing|connect)\._tcp)\.?\s+(\S+:\d+)\s*$",
-                     line.strip())
-        if m:
-            found.append({"name": m.group(1),
-                          "kind": "pairing" if m.group(2) == PAIRING else "connect",
-                          "address": m.group(3)})
-    return found
+    if code == 0:
+        for line in out.splitlines():
+            m = re.match(r"^(\S+)\s+(_adb-tls-(?:pairing|connect)\._tcp)\.?\s+(\S+:\d+)\s*$",
+                         line.strip())
+            if m:
+                kind = "pairing" if m.group(2) == PAIRING else "connect"
+                found[(kind, m.group(1), *m.group(3).rsplit(":", 1))] = {
+                    "name": m.group(1), "kind": kind, "address": m.group(3)}
+    return list(found.values())
 
 
 def qr_secret() -> "Tuple[str, str, str]":

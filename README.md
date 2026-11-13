@@ -28,7 +28,9 @@ finds, and every page says plainly what it needs when something is missing.
   shares to the computer over Bluetooth into Downloads.
 - **This screen on your phone** - over adb (a USB cable, or Wi-Fi debugging) at
   the phone's own size, or over the phone's Bluetooth network when adb cannot
-  reach it.
+  reach it. **Touch on the phone** (off until you turn it on) makes fingers tap
+  and drag on the desktop through a virtual touchscreen; a window with
+  `block-out-from "screencast"` is black on the phone.
 - **FM radio, NFC and infrared** - listen to an FM station live or play a
   recording, read NFC tags and write links to stickers, learn the buttons of
   a remote control and press them from here.
@@ -46,6 +48,7 @@ finds, and every page says plainly what it needs when something is missing.
 | Phone link (files over Wi-Fi) | The KDE Connect app on the phone, on the same Wi-Fi; to receive, turn on "Receive files from your phone over Wi-Fi" (Background) - it opens KDE Connect's ports in the firewall until turned off or a restart |
 | Phone link (one clipboard) | The KDE Connect app on the phone, paired; turn on "Share the clipboard with your phone" (Background, off by default). Copy on one, paste on the other; what a password manager marks secret is never sent, and the shell's clipboard history says what came from the phone |
 | This screen on your phone | USB debugging - on a cable or over Wi-Fi - or the phone's Bluetooth tethering; GStreamer on this computer |
+| Touch on the phone | `/dev/uinput` (the `input` group; ShaniOS ships `80-uinput.rules`) and the same GStreamer |
 | FM radio | An RTL-SDR USB stick (RTL2832U) and `rtl_fm` (rtl-sdr) to listen live, played through PipeWire (`pw-play`); recordings play without the stick |
 | NFC | A USB NFC reader that works with libnfc (for example an ACR122U) |
 | Infrared remote | An infrared receiver (a `/dev/lirc*` device) to learn buttons; a transmitter (a `/dev/lirc*` that can send) to press a remote's buttons through lircd (`irsend`), or send a raw code with `ir-ctl` (v4l-utils) |
@@ -108,6 +111,11 @@ the same Wi-Fi with KDE Connect; and this screen shown on your phone - over adb
 (a cable, or Wi-Fi debugging) when it can reach a phone that way, and over the
 phone's Bluetooth tethering when it cannot. With nothing connected yet, the page
 says so and offers the one thing to do:
+
+The Screen page has a **Touch** switch, off until pressed: with it on, fingers on
+the phone tap and drag on the desktop through a virtual touchscreen (`/dev/uinput`,
+the `input` group), so the phone works as a touch display. A window marked
+`block-out-from "screencast"` is black on the phone.
 
 ![No phone connected yet](docs/screenshots/devices-empty.png)
 
@@ -253,6 +261,28 @@ ships neither:
 
 Video is a local socket, not D-Bus: `VideoSocket()` names it; each frame is a
 12-byte header (width, height, length; big-endian u32) and RGB24.
+
+### A second screen, not yet
+
+This mirrors the screen the computer has; it does not add one. niri cannot
+create a virtual output (niri-wm/niri#3800, open), so there is no second
+desktop to put on the phone. The one route that works on niri is a **VKMS**
+virtual display — a kernel module that creates a real DRM output — and that is
+a DKMS module per running kernel, Secure Boot/MOK enrolment and a polkit policy.
+The project is not taking that in: a module that has to be rebuilt on every
+kernel is not something an OS image can promise. When niri grows virtual
+outputs, the mirror and the touch layer here are already what a second screen
+would need.
+
+Touch is the half that is here: `/dev/uinput`, the `input` group, a type-B
+touchscreen (ShaniOS ships `80-uinput.rules`). A window with
+`block-out-from "screencast"` is black on the phone.
+
+H.264 is a follow-up: `x264enc` ships with `shani-multimedia` (`gst-plugins-ugly`)
+on a real image, and over the USB road the phone's `localhost` is a secure
+context, so WebCodecs could carry sharper 1080p than VP8 does. It is not in
+this tree because the encoder is absent on the dev box and a decode path nobody
+has run is worse than the one that works.
 
 ### Layout
 ```
