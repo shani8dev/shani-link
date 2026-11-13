@@ -22,8 +22,9 @@ finds, and every page says plainly what it needs when something is missing.
   phone's contacts beside it.
 - **Your watch or fitness band** - steps, sleep, stress and workouts at a
   glance, and Find when it is lost.
-- **Android phone tools** - battery and storage, a screenshot, a link or a
-  file sent to the phone, over a USB cable.
+- **Android phone tools** - battery and storage, a screenshot, a screen
+  recording, a link opened, an app opened or a file sent to the phone, over a
+  USB cable.
 - **Sharing files** - send a file to your phone; receive what your phone
   shares to the computer over Bluetooth into Downloads.
 - **This screen on your phone** - over adb (a USB cable, or Wi-Fi debugging) at

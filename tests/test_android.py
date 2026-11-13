@@ -22,6 +22,16 @@ case "$1 $2" in
   "shell wm") if [ "$3" = "size" ]; then
                 printf 'Physical size: 1080x2400\nOverride size: 1080x2340\n'
               fi ;;
+  "shell monkey") echo "Events injected: 1" ;;
+  "shell screenrecord") echo "screenrecord: started" ;;
+  "shell rm") echo "" ;;
+  "shell settings") case "$3 $4" in
+      "get global") echo "${STAY_ON:-1}" ;;
+      "put global") echo "" ;;
+      "get system") [ -f "$HOME/.brightness" ] && cat "$HOME/.brightness" || echo 19 ;;
+      "put system") mkdir -p "$HOME"; echo "$6" > "$HOME/.brightness" ;;
+      *) exit 2 ;;
+    esac ;;
   "shell cmd") case "$3 $4" in
       "location is-location-enabled") echo false ;;
       *) exit 2 ;;
@@ -186,3 +196,34 @@ def test_the_display_is_size_rate_density_and_hdr(fake_adb):
     said = ad.display("R58N123")
     assert "1080x2460" in said and "120 Hz" in said, said
     assert "density 480" in said and "no HDR" in said, said
+
+
+def test_an_app_is_opened_by_its_package_name(fake_adb):
+    assert ad.launch("R58N123", "com.android.settings") == "Opened settings on the phone."
+
+
+def test_a_package_that_is_not_installed_is_a_sentence(monkeypatch):
+    monkeypatch.setattr(ad, "_shell", lambda *_a: "No activities found to run, monkey aborted.")
+    said = ad.launch("R58N123", "com.nope")
+    assert "would not open" in said, said
+
+
+def test_brightness_is_a_percentage_on_a_255_scale(fake_adb):
+    assert ad.brightness("R58N123", 50) == "Brightness 50%."
+    assert int((fake_adb / ".brightness").read_text()) == 127, "50% of 255 is 127"
+
+
+def test_a_screen_recording_lands_here_and_is_cleaned_up(fake_adb, monkeypatch, tmp_path):
+    made = {}
+
+    def fake_pull(serial, remote, target):
+        made["remote"] = remote
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"fake mp4")
+        return f"Copied the recording to {target}."
+
+    monkeypatch.setattr(ad, "pull", fake_pull)
+    target = tmp_path / "clip.mp4"
+    said = ad.record("R58N123", 3, target)
+    assert "Copied the recording" in said, said
+    assert made["remote"] == f"/sdcard/{target.name}", made

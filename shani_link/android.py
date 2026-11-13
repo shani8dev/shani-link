@@ -5,10 +5,14 @@ Moved from Shani Chronoa's `android_device` skill, which keeps only its consent
 (`phone-control-enabled`) and calls `_run` here. The Android tab of the app
 calls the functions directly: a person pressing a button is the asking.
 
-A fixed set of read-mostly verbs, deliberately not taps and not `adb shell`: a
-phone holds its owner's messages, photos and location. The phone itself is the
-first consent - adb only reaches a device whose owner turned on USB debugging
-and accepted this computer's key.
+A fixed set of verbs, deliberately not taps: devices, info, screenshot, apps,
+push, pull, open_url, launch, brightness and record, plus the reads - the
+phone's notifications, screen time, line, Wi-Fi, temperatures, location and
+panel. They do use `adb shell` where adb offers no other way (`dumpsys`,
+`monkey`, `settings`, `screenrecord`); what is refused is a shell *prompt*, not
+the commands. A phone holds its owner's messages, photos and location. The phone
+itself is the first consent - adb only reaches a device whose owner turned on
+USB debugging and accepted this computer's key.
 
 Every function answers with a sentence a person can read; nothing raises for an
 ordinary failure (no adb, no phone, a locked screen, a timeout).
@@ -27,7 +31,8 @@ import time
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-ACTIONS = ("devices", "info", "screenshot", "apps", "push", "pull", "open_url")
+ACTIONS = ("devices", "info", "screenshot", "apps", "push", "pull", "open_url",
+           "launch", "brightness", "record")
 _TIMEOUT = 60
 #: where a file sent to the phone lands unless told otherwise
 PHONE_DOWNLOADS = "/sdcard/Download/"
@@ -292,6 +297,54 @@ def display(serial: str) -> str:
     return ", ".join(parts) + "."
 
 
+def launch(serial: str, package: str) -> str:
+    """Open an app on the phone, by package name.
+
+    `monkey -p` is adb's own way to start an app's launcher activity; it is not
+    a tap, and it names the app rather than describing where its icon is.
+    """
+    package = (package or "").strip()
+    if not re.match(r"^[\w.]+$", package):
+        return "Give an app's package name, like com.android.settings."
+    out = _shell(serial, "monkey", "-p", package,
+                 "-c", "android.intent.category.LAUNCHER", "1")
+    if "Events injected: 1" in out:
+        return f"Opened {package.rsplit('.', 1)[-1]} on the phone."
+    said = (out or "").strip().splitlines()
+    return f"The phone would not open {package}: {said[-1] if said else 'it did not answer'}"
+
+
+def brightness(serial: str, percent: int) -> str:
+    """The phone's screen brightness, 0-100. The setting is 0-255."""
+    try:
+        level = max(0, min(100, int(percent)))
+    except (TypeError, ValueError):
+        return "Brightness is a percentage, 0 to 100."
+    value = str(int(level * 255 / 100))
+    _shell(serial, "settings", "put", "system", "screen_brightness", value)
+    got = _shell(serial, "settings", "get", "system", "screen_brightness")
+    return (f"Brightness {level}%." if got == value
+            else f"Set brightness to {level}%; the phone reports {got}.")
+
+
+def record(serial: str, seconds: int = 30, target: Optional[Path] = None) -> str:
+    """Record the phone's screen to a file here, with `screenrecord` and `pull`."""
+    try:
+        seconds = max(1, min(180, int(seconds)))
+    except (TypeError, ValueError):
+        seconds = 30
+    target = Path(target) if target else (Path.home() / "Videos"
+                                          / f"phone-{time.strftime('%Y%m%d-%H%M%S')}.mp4")
+    remote = f"/sdcard/{target.name}"
+    proc = _adb(["shell", "screenrecord", "--time-limit", str(seconds), remote],
+                serial, timeout=seconds + 30)
+    if proc.returncode != 0:
+        return f"The phone would not record its screen: {(proc.stderr or proc.stdout).strip()[:160]}"
+    said = pull(serial, remote, target)
+    _shell(serial, "rm", "-f", remote)
+    return said
+
+
 def display_size(serial: str) -> "Optional[Tuple[int, int]]":
     """The phone's own pixel size as it reports it, or None when it will not say.
 
@@ -470,6 +523,14 @@ def _run(arguments: dict) -> str:
             if not remote.startswith("/sdcard/"):
                 return "Give a path on the phone's shared storage, starting /sdcard/."
             return pull(serial, remote, in_home(arguments.get("to") or f"~/Downloads/{remote.rsplit('/', 1)[-1]}"))
+        if action == "launch":
+            return launch(serial, (arguments.get("package") or ""))
+        if action == "brightness":
+            return brightness(serial, arguments.get("percent", 50))
+        if action == "record":
+            target = arguments.get("output")
+            return record(serial, arguments.get("seconds", 30),
+                          in_home(target) if target else None)
         return open_url(serial, arguments.get("url") or "")
     except PathProblem as exc:
         return str(exc)
