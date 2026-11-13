@@ -182,6 +182,34 @@ def test_start_passes_the_touch_switch_to_the_stream(monkeypatch):
     monkeypatch.setitem(surface_mod._TOUCH, "on", False)
 
 
+def test_sharing_a_window_asks_the_portal_for_one(monkeypatch):
+    """A window share is the portal's SourceType WINDOW, chosen by the person;
+    the shell can then change it with the dynamic cast target."""
+    from shani_link import screen_stream
+    monkeypatch.setattr(screen_stream, "gstreamer_ready", lambda: (True, ""))
+    monkeypatch.setattr(screen_stream, "phone_serial", lambda: ("R5CT10", ""))
+    seen = {}
+
+    class Proc:
+        def __init__(self, argv, **kw):
+            seen["env"] = kw["env"]
+
+        def poll(self):
+            return None
+
+    monkeypatch.setattr(surface_mod.subprocess, "Popen", Proc)
+    monkeypatch.setitem(surface_mod._PROC, "proc", None)
+    said = surface_mod.act("start-window")
+    assert seen["env"]["SHANI_LINK_SCREEN_WINDOW"] == "1", seen["env"]
+    assert "a window" in said, said
+
+
+def test_the_page_has_a_share_a_window_button():
+    page, surface = _build()
+    labels = [b.get_label() for b in _buttons(page)]
+    assert labels.count("Share a window") == 1, labels
+
+
 def test_a_machine_that_cannot_share_says_what_is_missing(monkeypatch):
     """Not started, and the reason - the engine names the missing package."""
     from shani_link import screen_stream

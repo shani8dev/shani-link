@@ -103,8 +103,8 @@ def act(action: str) -> str:
         _PROC["proc"] = None
         _PROC.pop("where", None)
         return "Stopped. The portal session is closed and nothing is streamed."
-    if action != "start":
-        return f"action must be status, start or stop, not {action!r}"
+    if action not in ("start", "start-window"):
+        return f"action must be status, start, start-window or stop, not {action!r}"
     state, detail = check()
     if state != "ready":
         return f"Not started: {state} ({detail}). Fix that first - the portal was not opened."
@@ -123,6 +123,10 @@ def act(action: str) -> str:
     env["PYTHONPATH"] = package_root + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
     env["SHANI_LINK_SCREEN_TRANSPORT"] = transport
     env["SHANI_LINK_SCREEN_TOUCH"] = "1" if _TOUCH["on"] else "0"
+    # One window is the portal's own choice (SourceType WINDOW); the shell's
+    # dynamic cast target can then change it without asking again.
+    window = action == "start-window"
+    env["SHANI_LINK_SCREEN_WINDOW"] = "1" if window else "0"
     try:
         log = log_path()
         log.parent.mkdir(parents=True, exist_ok=True)
@@ -132,7 +136,8 @@ def act(action: str) -> str:
     except OSError as exc:
         return f"The stream would not start ({exc})."
     _PROC["where"] = detail
-    return (f"Sharing the screen on {detail}. Open that address on the phone. "
+    return (f"Sharing {'a window' if window else 'the screen'} on {detail}. "
+            "Open that address on the phone. "
             "The desktop asked you first and will ask again next time."
             + (" Fingers, a stylus and the keyboard on the phone can drive this computer."
                if _TOUCH["on"] else ""))
@@ -215,11 +220,15 @@ class _ShareSurface:
         self._start.set_tooltip_text("Open the portal and stream to the paired phone")
         self._start.connect("clicked", lambda _b: self._run("start"))
 
+        self._window = Gtk.Button(label="Share a window")
+        self._window.set_tooltip_text("Share one window (the desktop asks which) instead of the whole screen")
+        self._window.connect("clicked", lambda _b: self._run("start-window"))
+
         self._stop = Gtk.Button(label="Stop")
         self._stop.set_tooltip_text("Close the portal session and stop streaming")
         self._stop.connect("clicked", lambda _b: self._run("stop"))
 
-        for widget in (self._check, self._start, self._stop):
+        for widget in (self._check, self._start, self._window, self._stop):
             box.append(widget)
         return box
 
@@ -232,7 +241,8 @@ class _ShareSurface:
         self._busy = True
         for widget in (self._check, self._start, self._stop):
             widget.set_sensitive(False)
-        self._say({"status": "Checking…", "start": "Starting…", "stop": "Stopping…"}.get(action, f"{action}…"))
+        self._say({"status": "Checking…", "start": "Starting…", "start-window": "Starting…",
+                   "stop": "Stopping…"}.get(action, f"{action}…"))
 
         def work():
             try:

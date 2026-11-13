@@ -311,11 +311,13 @@ class ScreenCast:
     def _sig(method: str) -> str:
         return {"CreateSession": "(a{sv})", "SelectSources": "(oa{sv})", "Start": "(osa{sv})"}[method]
 
-    def start(self) -> "tuple[int, int]":
+    def start(self, window: bool = False) -> "tuple[int, int]":
+        """Open the portal and take its stream. `window=True` asks for a window
+        instead of a monitor - the person picks which, and only that is shown."""
         GLib = self.GLib
         res = self._request("CreateSession", [{"session_handle_token": GLib.Variant("s", "chronoa_s")}])
         self.session = res["session_handle"]
-        self._request("SelectSources", [self.session, {"types": GLib.Variant("u", 1),          # monitor
+        self._request("SelectSources", [self.session, {"types": GLib.Variant("u", 2 if window else 1),
                                                        "cursor_mode": GLib.Variant("u", 2),    # cursor drawn in
                                                        "multiple": GLib.Variant("b", False)}])
         res = self._request("Start", [self.session, "", {}], timeout=180)       # the person answers here
@@ -1093,6 +1095,8 @@ def _arguments(argv=None) -> argparse.Namespace:
                         help="webm (a <video>) or mjpeg (an <img>, no JavaScript)")
     parser.add_argument("--seconds", type=float, default=0.0,
                         help="stop after this many seconds (default: run until Ctrl+C)")
+    parser.add_argument("--window", action="store_true",
+                        help="share one window (the person picks it) instead of a monitor")
     parser.add_argument("--touch", action="store_true",
                         help="let fingers on the phone tap and drag on this computer "
                              "(also SHANI_LINK_SCREEN_TOUCH=1)")
@@ -1145,11 +1149,11 @@ def _portal_problem(exc: BaseException) -> str:
 
 def _run(host: str, width: int, height: int, fps: int, bitrate: int, codec: Codec,
          seconds: float = 0.0, touch_surface=None, pen_surface=None, keyboard=None,
-         sound_sink: str = "") -> None:
+         sound_sink: str = "", window: bool = False) -> None:
     """Open the portal, serve one stream, and stay until it ends."""
     cast = ScreenCast()
     try:
-        fd, node = cast.start()                               # the person answers here
+        fd, node = cast.start(window=window)                  # the person answers here
         stream = Stream(fd, node, width, height, fps, bitrate, codec,
                         session_closed=lambda: cast.closed)
         done = threading.Event()
@@ -1183,7 +1187,7 @@ def _run(host: str, width: int, height: int, fps: int, bitrate: int, codec: Code
 
 
 def _serve(args: argparse.Namespace, codec: Codec, surface, pen_surface, keyboard,
-           sound_sink: str = "") -> None:
+           sound_sink: str = "", window: bool = False) -> None:
     transport = pick_transport(args.transport)
 
     if transport in ("usb", "wifi"):
@@ -1200,7 +1204,7 @@ def _serve(args: argparse.Namespace, codec: Codec, surface, pen_surface, keyboar
                 print(note, flush=True)
             try:
                 _run(USB_HOST, width, height, USB_FPS, USB_BITRATE, codec, args.seconds,
-                     surface, pen_surface, keyboard, sound_sink)
+                     surface, pen_surface, keyboard, sound_sink, window)
             except Exception as exc:  # noqa: BLE001 - the portal is a desktop service
                 print(f"Stopping: {_portal_problem(exc)}", flush=True)
                 sys.exit(1)
@@ -1211,7 +1215,7 @@ def _serve(args: argparse.Namespace, codec: Codec, surface, pen_surface, keyboar
         sys.exit("No Bluetooth network: turn on Bluetooth tethering on the phone and connect to it first.")
     try:
         _run(host, BLUETOOTH_WIDTH, BLUETOOTH_HEIGHT, BLUETOOTH_FPS, BLUETOOTH_BITRATE,
-             codec, args.seconds, surface, pen_surface, keyboard, sound_sink)
+             codec, args.seconds, surface, pen_surface, keyboard, sound_sink, window)
     except Exception as exc:  # noqa: BLE001
         print(f"Stopping: {_portal_problem(exc)}", flush=True)
         sys.exit(1)
@@ -1233,7 +1237,7 @@ def main() -> None:
     else:
         print("Sound is off: no default audio sink (pw-metadata)", flush=True)
     try:
-        _serve(args, codec, surface, pen_surface, keyboard, sound)
+        _serve(args, codec, surface, pen_surface, keyboard, sound, args.window)
     finally:
         for device in (surface, pen_surface, keyboard):
             if device is not None:
