@@ -349,6 +349,29 @@ class ScreenCast:
 
 # --- codecs ------------------------------------------------------------------
 
+def default_sink() -> str:
+    """The default audio sink's name, from PipeWire's own metadata (or "").
+
+    `pw-metadata` is part of the pipewire package (a hard dependency), so this
+    does not need `pactl` - which the image does not ship.
+    """
+    try:
+        out = subprocess.run(["pw-metadata"], capture_output=True, text=True,
+                             timeout=5, check=False).stdout
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    match = re.search(r"key:'default\.audio\.sink'\s+value:'\{\"name\":\"([^\"]+)\"", out)
+    return match.group(1) if match else ""
+
+
+def audio_pipeline(sink: str) -> str:
+    """Desktop audio as a live Opus stream in WebM, which a browser plays."""
+    return (f"pipewiresrc target-object={sink} do-timestamp=true ! "
+            f"audioconvert ! audioresample ! "
+            f"opusenc bitrate=64000 ! webmmux streamable=true ! "
+            f"appsink name=out emit-signals=true sync=false max-buffers=64 drop=true")
+
+
 class Codec:
     """One way of putting pictures on the wire: pipeline tail, page, framing."""
 
@@ -428,6 +451,8 @@ background:#000b;z-index:6}
 #type input{flex:1;min-width:0;padding:8px 10px;border-radius:8px;border:1px solid #555;
 background:#111;color:#eee;font:16px sans-serif}
 #type button{display:none}
+#sound{position:fixed;top:8px;right:8px;display:none;z-index:6;padding:8px 12px;
+border-radius:8px;border:1px solid #666;background:#000b;color:#eee;font:14px sans-serif}
 """
 
 INPUT_JS = """
@@ -500,9 +525,14 @@ kind.addEventListener("keydown", (event) => {
   if (event.key === "Enter") { event.preventDefault(); send("/key", {text: "\n"}); }
 });
 
+document.getElementById("sound").addEventListener("click", () => {
+  document.getElementById("sound-el").play().catch(() => {});
+});
+
 fetch("/info").then((r) => r.json()).then((info) => {
   if (info.touch || info.pen) layer.style.display = "block";
   if (info.keyboard) document.getElementById("type").style.display = "flex";
+  if (info.sound) document.getElementById("sound").style.display = "block";
 }).catch(() => {});
 """
 
@@ -520,6 +550,8 @@ def _page(media: str, extra_css: str = "") -> bytes:
             + '<div id="type"><input id="kind" placeholder="Type on this computer…" '
               'autocomplete="off" autocapitalize="off" spellcheck="false">'
               '<button tabindex="-1">·</button></div>'
+            + '<button id="sound" type="button">Sound on</button>'
+            + '<audio id="sound-el" src="/audio" autoplay></audio>'
             + "<script>" + INPUT_JS + "</script></body></html>").encode()
 
 
@@ -564,12 +596,14 @@ class StreamServer:
     """
 
     def __init__(self, stream: Stream, host: str, port: int = PORT, on_fatal=None,
-                 touch_surface=None, pen_surface=None, keyboard=None) -> None:
+                 touch_surface=None, pen_surface=None, keyboard=None,
+                 sound_sink: str = "") -> None:
         self.stream, self.host, self.port = stream, host, port
         self.on_fatal = on_fatal
         self.touch_surface = touch_surface
         self.pen_surface = pen_surface
         self.keyboard = keyboard
+        self.sound_sink = sound_sink
         self.httpd: Optional[ThreadingHTTPServer] = None
 
     def serve(self) -> None:
@@ -597,13 +631,24 @@ class StreamServer:
                     # touch must not swallow taps that were meant for a scroll.
                     body = json.dumps({"touch": owner.touch_surface is not None,
                                        "pen": owner.pen_surface is not None,
-                                       "keyboard": owner.keyboard is not None}).encode()
+                                       "keyboard": owner.keyboard is not None,
+                                       "sound": bool(owner.sound_sink)}).encode()
                     self.send_response(200)
                     self.send_header("Content-Type", "application/json")
                     self.send_header("Content-Length", str(len(body)))
                     self.send_header("Cache-Control", "no-store")
                     self.end_headers()
                     self.wfile.write(body)
+                    return
+                if self.path == "/audio":
+                    if not owner.sound_sink:
+                        self.send_error(404)
+                        return
+                    self.send_response(200)
+                    self.send_header("Content-Type", "audio/webm")
+                    self.send_header("Cache-Control", "no-store")
+                    self.end_headers()
+                    self._pump_audio()
                     return
                 if self.path != "/stream":
                     self.send_error(404)
@@ -698,6 +743,46 @@ class StreamServer:
                         owner.on_fatal(said)
                     return
 
+            def _pump_audio(self) -> None:
+                """Desktop audio until the listener leaves; one restart if it stops."""
+                recovery = Recovery()
+                while True:
+                    pipe = Gst.parse_launch(audio_pipeline(owner.sound_sink))
+                    sink = pipe.get_by_name("out")
+                    stop = threading.Event()
+
+                    def on_sample(appsink):
+                        buf = appsink.emit("pull-sample").get_buffer()
+                        ok, info = buf.map(Gst.MapFlags.READ)
+                        if ok:
+                            try:
+                                self.wfile.write(bytes(info.data))
+                                recovery.playing()
+                            except OSError:
+                                stop.set()
+                            finally:
+                                buf.unmap(info)
+                        return Gst.FlowReturn.OK
+
+                    sink.connect("new-sample", on_sample)
+                    pipe.set_state(Gst.State.PLAYING)
+                    reason = None
+                    while not stop.wait(0.5):
+                        message = pipe.get_bus().pop_filtered(
+                            Gst.MessageType.ERROR | Gst.MessageType.EOS)
+                        if message is None:
+                            continue
+                        reason = (message.parse_error()[0].message
+                                  if message.type == Gst.MessageType.ERROR else "EOS")
+                        break
+                    pipe.set_state(Gst.State.NULL)
+                    if reason is None:
+                        return
+                    restart, said = recovery.stopped(session_closed=False)
+                    logger.warning("screen stream: audio %s (%s)", said, reason)
+                    if not restart:
+                        return
+
         ThreadingHTTPServer.allow_reuse_address = True
         self.httpd = ThreadingHTTPServer((self.host, self.port), Handler)
         logger.info("screen stream: http://%s:%d", self.host, self.port)
@@ -787,7 +872,8 @@ def _portal_problem(exc: BaseException) -> str:
 
 
 def _run(host: str, width: int, height: int, fps: int, bitrate: int, codec: Codec,
-         seconds: float = 0.0, touch_surface=None, pen_surface=None, keyboard=None) -> None:
+         seconds: float = 0.0, touch_surface=None, pen_surface=None, keyboard=None,
+         sound_sink: str = "") -> None:
     """Open the portal, serve one stream, and stay until it ends."""
     cast = ScreenCast()
     try:
@@ -801,7 +887,8 @@ def _run(host: str, width: int, height: int, fps: int, bitrate: int, codec: Code
             done.set()
 
         server = StreamServer(stream, host, on_fatal=fatal, touch_surface=touch_surface,
-                              pen_surface=pen_surface, keyboard=keyboard)
+                              pen_surface=pen_surface, keyboard=keyboard,
+                              sound_sink=sound_sink)
         threading.Thread(target=server.serve, daemon=True, name="screen-stream").start()
         print(f"Open http://{host}:{PORT} on the phone", flush=True)
         timer = None
@@ -823,7 +910,8 @@ def _run(host: str, width: int, height: int, fps: int, bitrate: int, codec: Code
         cast.close()
 
 
-def _serve(args: argparse.Namespace, codec: Codec, surface, pen_surface, keyboard) -> None:
+def _serve(args: argparse.Namespace, codec: Codec, surface, pen_surface, keyboard,
+           sound_sink: str = "") -> None:
     transport = pick_transport(args.transport)
 
     if transport in ("usb", "wifi"):
@@ -840,7 +928,7 @@ def _serve(args: argparse.Namespace, codec: Codec, surface, pen_surface, keyboar
                 print(note, flush=True)
             try:
                 _run(USB_HOST, width, height, USB_FPS, USB_BITRATE, codec, args.seconds,
-                     surface, pen_surface, keyboard)
+                     surface, pen_surface, keyboard, sound_sink)
             except Exception as exc:  # noqa: BLE001 - the portal is a desktop service
                 print(f"Stopping: {_portal_problem(exc)}", flush=True)
                 sys.exit(1)
@@ -851,7 +939,7 @@ def _serve(args: argparse.Namespace, codec: Codec, surface, pen_surface, keyboar
         sys.exit("No Bluetooth network: turn on Bluetooth tethering on the phone and connect to it first.")
     try:
         _run(host, BLUETOOTH_WIDTH, BLUETOOTH_HEIGHT, BLUETOOTH_FPS, BLUETOOTH_BITRATE,
-             codec, args.seconds, surface, pen_surface, keyboard)
+             codec, args.seconds, surface, pen_surface, keyboard, sound_sink)
     except Exception as exc:  # noqa: BLE001
         print(f"Stopping: {_portal_problem(exc)}", flush=True)
         sys.exit(1)
@@ -867,8 +955,13 @@ def main() -> None:
 
     wanted = args.touch or os.environ.get("SHANI_LINK_SCREEN_TOUCH", "").lower() in ("1", "true", "yes")
     surface, pen_surface, keyboard = _input_surfaces(wanted)
+    sound = default_sink()
+    if sound:
+        print(f"Sound is available: {sound}", flush=True)
+    else:
+        print("Sound is off: no default audio sink (pw-metadata)", flush=True)
     try:
-        _serve(args, codec, surface, pen_surface, keyboard)
+        _serve(args, codec, surface, pen_surface, keyboard, sound)
     finally:
         for device in (surface, pen_surface, keyboard):
             if device is not None:

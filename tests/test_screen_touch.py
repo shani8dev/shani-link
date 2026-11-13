@@ -24,10 +24,11 @@ class Recorder:
         self.frames.append(points)
 
 
-def _serve(touch_surface, port=0, pen_surface=None, keyboard=None):
+def _serve(touch_surface, port=0, pen_surface=None, keyboard=None, sound_sink=""):
     stream = ss.Stream(0, 0)
     server = ss.StreamServer(stream, "127.0.0.1", port=port, touch_surface=touch_surface,
-                             pen_surface=pen_surface, keyboard=keyboard)
+                             pen_surface=pen_surface, keyboard=keyboard,
+                             sound_sink=sound_sink)
     threading.Thread(target=server.serve, daemon=True, name="screen-stream-test").start()
     deadline = time.monotonic() + 5
     while server.httpd is None and time.monotonic() < deadline:
@@ -64,7 +65,8 @@ def server():
 def test_the_page_is_told_whether_touch_is_on(server):
     recorder, base = server
     status, body = _get(base + "/info")
-    assert status == 200 and json.loads(body) == {"touch": True, "pen": False, "keyboard": False}
+    assert status == 200 and json.loads(body) == {"touch": True, "pen": False, "keyboard": False,
+                                                   "sound": False}
 
 
 def test_the_page_asks_before_it_listens():
@@ -72,7 +74,8 @@ def test_the_page_asks_before_it_listens():
     base = f"http://127.0.0.1:{port}"
     try:
         status, body = _get(base + "/info")
-        assert status == 200 and json.loads(body) == {"touch": False, "pen": False, "keyboard": False}
+        assert status == 200 and json.loads(body) == {"touch": False, "pen": False,
+                                                       "keyboard": False, "sound": False}
         assert _post(base + "/touch", b'{"points": []}') == 404
     finally:
         streamer.stop()
@@ -153,10 +156,61 @@ def test_the_typing_endpoint_reaches_the_keyboard():
 
 def test_the_page_is_told_which_devices_are_on():
     recorder = Recorder()
-    streamer, port = _serve(recorder, pen_surface=PenRecorder(), keyboard=KeyRecorder())
+    streamer, port = _serve(recorder, pen_surface=PenRecorder(), keyboard=KeyRecorder(),
+                            sound_sink="test-sink")
     base = f"http://127.0.0.1:{port}"
     try:
         _status, body = _get(base + "/info")
-        assert json.loads(body) == {"touch": True, "pen": True, "keyboard": True}
+        assert json.loads(body) == {"touch": True, "pen": True, "keyboard": True,
+                                    "sound": True}
+    finally:
+        streamer.stop()
+
+
+# --- the speaker: desktop audio to the phone -----------------------------------
+
+def test_the_default_sink_comes_from_pipewire_not_pactl(monkeypatch):
+    sample = ("update: id:0 key:'default.audio.sink' value:'{\"name\":\"alsa_output.x.Speaker__sink\"}' "
+              "type:'Spa:String:JSON'\n")
+    monkeypatch.setattr(ss.subprocess, "run", lambda *a, **k: type("P", (), {"stdout": sample})())
+    assert ss.default_sink() == "alsa_output.x.Speaker__sink"
+
+
+def test_no_pipewire_is_no_sink_not_a_traceback(monkeypatch):
+    def boom(*_a, **_k):
+        raise OSError("no pw-metadata")
+    monkeypatch.setattr(ss.subprocess, "run", boom)
+    assert ss.default_sink() == ""
+
+
+def test_the_audio_pipeline_is_opus_in_webm_from_that_sink():
+    line = ss.audio_pipeline("alsa_output.x.Speaker__sink")
+    assert "target-object=alsa_output.x.Speaker__sink" in line
+    assert "opusenc" in line and "webmmux streamable=true" in line
+
+
+def test_the_page_says_sound_is_available_and_serves_404_without_a_sink():
+    streamer, port = _serve(Recorder())
+    base = f"http://127.0.0.1:{port}"
+    try:
+        _status, body = _get(base + "/info")
+        assert json.loads(body)["sound"] is False
+        assert _get(base + "/audio") if False else True
+        try:
+            _get(base + "/audio")
+            raise AssertionError("audio without a sink must not be served")
+        except urllib.error.HTTPError as exc:
+            assert exc.code == 404
+    finally:
+        streamer.stop()
+
+
+def test_the_page_carries_the_sound_button():
+    streamer, port = _serve(Recorder())
+    base = f"http://127.0.0.1:{port}"
+    try:
+        _status, body = _get(base + "/")
+        text = body.decode()
+        assert 'id="sound"' in text and '"/audio"' in text
     finally:
         streamer.stop()
