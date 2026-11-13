@@ -155,9 +155,8 @@ class _ShareSurface:
         self._body.append(self._group)
         self._row = common.row("Share this screen with your phone",
                                "Plug the phone in with USB debugging on, or turn on "
-                               "its Bluetooth tethering and connect this computer to "
-                               "it. You choose what to share; over the cable the "
-                               "picture never leaves the phone's own loopback.",
+                               "its Bluetooth tethering and connect this computer to it. "
+                               "You choose what to share.",
                                suffix=self._buttons())
         self._group.add(self._row)
         #: What the last action said, in full - a truncated one-line label is not
