@@ -16,6 +16,11 @@ WPCTL_TIMEOUT = 10
 _LINE = re.compile(r"^[\s│├└─]*?(\*)?\s*(\d+)\.\s+(.+?)(?:\s+\[vol:[^\]]*\])?\s*$")
 
 
+def nodes() -> "list[dict]":
+    """The live graph's nodes, as property dicts - or [] when PipeWire is not answering."""
+    return _graph_nodes()
+
+
 def _graph_nodes() -> list[dict]:
     """Node property dicts from the live graph, or [] if unavailable."""
     if not shutil.which("pw-dump"):

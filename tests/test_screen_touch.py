@@ -24,11 +24,13 @@ class Recorder:
         self.frames.append(points)
 
 
-def _serve(touch_surface, port=0, pen_surface=None, keyboard=None, sound_sink=""):
+def _serve(touch_surface, port=0, pen_surface=None, keyboard=None, sound_sink="",
+           mic_source="", camera=True):
     stream = ss.Stream(0, 0)
     server = ss.StreamServer(stream, "127.0.0.1", port=port, touch_surface=touch_surface,
                              pen_surface=pen_surface, keyboard=keyboard,
-                             sound_sink=sound_sink)
+                             sound_sink=sound_sink, mic_source=mic_source,
+                             camera=camera)
     threading.Thread(target=server.serve, daemon=True, name="screen-stream-test").start()
     deadline = time.monotonic() + 5
     while server.httpd is None and time.monotonic() < deadline:
@@ -66,7 +68,7 @@ def test_the_page_is_told_whether_touch_is_on(server):
     recorder, base = server
     status, body = _get(base + "/info")
     assert status == 200 and json.loads(body) == {"touch": True, "pen": False, "keyboard": False,
-                                                   "sound": False}
+                                                   "sound": False, "mic": False, "camera": True}
 
 
 def test_the_page_asks_before_it_listens():
@@ -75,7 +77,8 @@ def test_the_page_asks_before_it_listens():
     try:
         status, body = _get(base + "/info")
         assert status == 200 and json.loads(body) == {"touch": False, "pen": False,
-                                                       "keyboard": False, "sound": False}
+                                                       "keyboard": False, "sound": False,
+                                                       "mic": False, "camera": True}
         assert _post(base + "/touch", b'{"points": []}') == 404
     finally:
         streamer.stop()
@@ -162,7 +165,7 @@ def test_the_page_is_told_which_devices_are_on():
     try:
         _status, body = _get(base + "/info")
         assert json.loads(body) == {"touch": True, "pen": True, "keyboard": True,
-                                    "sound": True}
+                                    "sound": True, "mic": False, "camera": True}
     finally:
         streamer.stop()
 
@@ -212,5 +215,143 @@ def test_the_page_carries_the_sound_button():
         _status, body = _get(base + "/")
         text = body.decode()
         assert 'id="sound"' in text and '"/audio"' in text
+    finally:
+        streamer.stop()
+
+
+# --- the microphone: the phone as a desktop microphone -------------------------
+
+def test_the_microphone_is_the_loopback_card_when_it_is_loaded(monkeypatch):
+    from shani_link import audio
+    monkeypatch.setattr(audio, "nodes", lambda: [
+        {"node.name": "alsa_output.platform-snd_aloop.7"},
+        {"node.name": "alsa_input.platform-snd_aloop.7"}])
+    source, sink = ss.microphone()
+    assert source == "alsa_input.platform-snd_aloop.7"
+    assert sink == "alsa_output.platform-snd_aloop.7"
+
+
+def test_without_the_loopback_the_reason_names_the_module(monkeypatch):
+    from shani_link import audio
+    monkeypatch.setattr(audio, "nodes", lambda: [{"node.name": "alsa_output.x"}])
+    source, why = ss.microphone()
+    assert source == "" and "snd-aloop" in why, why
+
+
+def test_the_microphone_is_raw_pcm_into_the_loopback():
+    line = ss.mic_pipeline("alsa_output.platform-snd_aloop.0")
+    assert "appsrc" in line and "S16LE,rate=48000,channels=1" in line
+    assert "pipewiresink target-object=alsa_output.platform-snd_aloop.0" in line
+
+
+def test_the_page_offers_the_microphone_only_when_there_is_one(monkeypatch):
+    made = []
+
+    class FakeMic:
+        def __init__(self, sink):
+            self.sink = sink
+            self.data = []
+            made.append(self)
+
+        def push(self, data):
+            self.data.append(data)
+            return True
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(ss, "Mic", FakeMic)
+    streamer, port = _serve(Recorder(), mic_source="alsa_input.platform-snd_aloop.0")
+    base = f"http://127.0.0.1:{port}"
+    try:
+        _status, body = _get(base + "/info")
+        assert json.loads(body)["mic"] is True
+        assert _post(base + "/mic", b"\x00\x01") == 204
+        assert made and made[0].data == [b"\x00\x01"]
+    finally:
+        streamer.stop()
+
+
+def test_mic_without_a_loopback_is_404_and_the_page_has_the_button():
+    streamer, port = _serve(Recorder())
+    base = f"http://127.0.0.1:{port}"
+    try:
+        assert _post(base + "/mic", b"\x00\x01") == 404
+        _status, body = _get(base + "/")
+        assert 'id="mic"' in body.decode() and '"/mic"' in body.decode()
+    finally:
+        streamer.stop()
+
+
+# --- the camera: the phone as a PipeWire camera --------------------------------
+
+def test_the_camera_is_a_pipewire_video_source_not_a_kernel_module():
+    line = ss.camera_pipeline(1280, 720, 15)
+    assert "pipewiresink mode=provide" in line
+    assert "media.class=Video/Source" in line and "media.role=Camera" in line
+    assert "jpegdec" in line and "width=1280,height=720,framerate=15/1" in line
+
+
+def test_the_page_offers_the_camera_and_takes_frames(monkeypatch):
+    made = []
+
+    class FakeCamera:
+        def __init__(self):
+            self.data = []
+            made.append(self)
+
+        def push(self, frame):
+            self.data.append(frame)
+            return True
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(ss, "Camera", FakeCamera)
+    streamer, port = _serve(Recorder())
+    base = f"http://127.0.0.1:{port}"
+    try:
+        _status, body = _get(base + "/info")
+        assert json.loads(body)["camera"] is True
+        assert _post(base + "/camera", b"\xff\xd8jpeg") == 204
+        assert made and made[0].data == [b"\xff\xd8jpeg"]
+        _status, body = _get(base + "/")
+        assert 'id="cam"' in body.decode() and '"/camera"' in body.decode()
+    finally:
+        streamer.stop()
+
+
+def test_a_stream_without_a_camera_refuses_frames():
+    streamer, port = _serve(Recorder(), camera=False)
+    base = f"http://127.0.0.1:{port}"
+    try:
+        _status, body = _get(base + "/info")
+        assert json.loads(body)["camera"] is False
+        assert _post(base + "/camera", b"\xff\xd8") == 404
+    finally:
+        streamer.stop()
+
+
+def test_an_empty_frame_is_how_the_phone_stops_that_device(monkeypatch):
+    made = []
+
+    class FakeMic:
+        def __init__(self, sink):
+            self.closed = 0
+            made.append(self)
+
+        def push(self, data):
+            return True
+
+        def close(self):
+            self.closed += 1
+
+    monkeypatch.setattr(ss, "Mic", FakeMic)
+    streamer, port = _serve(Recorder(), mic_source="alsa_input.platform-snd_aloop.7")
+    base = f"http://127.0.0.1:{port}"
+    try:
+        assert _post(base + "/mic", b"\x00\x01") == 204
+        assert _post(base + "/mic", b"") == 204
+        assert made and made[0].closed == 1, "an empty post must close the encoder"
     finally:
         streamer.stop()

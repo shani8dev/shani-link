@@ -143,6 +143,13 @@ def test_the_page_offers_to_connect_a_phone(monkeypatch):
     assert fired[0][1].unpack() == "android", fired
 
 
+def test_the_page_says_what_the_phone_carries():
+    """The desktop describes the whole feature, not just the switch that lives here."""
+    page, surface = _build()
+    shown = " ".join(t for t in _texts(page) if t)
+    assert "On the phone" in shown and "camera" in shown.lower(), shown
+
+
 def test_the_touch_switch_is_on_the_page_and_off_by_default(monkeypatch):
     page, surface = _build()
     switch = getattr(surface, "_touch", None)

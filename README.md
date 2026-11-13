@@ -30,9 +30,10 @@ finds, and every page says plainly what it needs when something is missing.
   the phone's own size, or over the phone's Bluetooth network when adb cannot
   reach it. **Touch and type** (off until you turn it on) makes fingers, a
   stylus and the phone's keyboard drive the desktop through virtual devices; a
-  window with `block-out-from "screencast"` is black on the phone. **Sound on**
-  plays the desktop's audio on the phone (a live Opus stream from the default
-  sink).
+  window with `block-out-from "screencast"` is black on the phone. On the phone
+  the same page can **play the desktop's sound**, and **lend the desktop its
+  microphone** (cable) or **camera** (PipeWire-aware apps) - each a button that
+  is off until pressed there, and off again when pressed once more.
 - **FM radio, NFC and infrared** - listen to an FM station live or play a
   recording, read NFC tags and write links to stickers, learn the buttons of
   a remote control and press them from here.
@@ -52,6 +53,7 @@ finds, and every page says plainly what it needs when something is missing.
 | This screen on your phone | USB debugging - on a cable or over Wi-Fi - or the phone's Bluetooth tethering; GStreamer on this computer |
 | Touch on the phone | `/dev/uinput` (the `input` group; ShaniOS ships `80-uinput.rules`) and the same GStreamer |
 | Sound on the phone | PipeWire and a default audio sink (`pw-metadata`) |
+| Microphone from the phone | `snd-aloop` (in-tree; load with `index=7`) and a cable (a secure context) |
 | FM radio | An RTL-SDR USB stick (RTL2832U) and `rtl_fm` (rtl-sdr) to listen live, played through PipeWire (`pw-play`); recordings play without the stick |
 | NFC | A USB NFC reader that works with libnfc (for example an ACR122U) |
 | Infrared remote | An infrared receiver (a `/dev/lirc*` device) to learn buttons; a transmitter (a `/dev/lirc*` that can send) to press a remote's buttons through lircd (`irsend`), or send a raw code with `ir-ctl` (v4l-utils) |
@@ -283,13 +285,27 @@ window with `block-out-from "screencast"` is black on the phone. **Sound** is
 the other half that works: the default sink's monitor, encoded to Opus and
 played in the browser.
 
-The **microphone** is the one piece left: `pw-loopback` can make the virtual
-source (`media.class=Audio/Source`), and `pipewiresink` can play into it, but a
-test on this host got silence through the loopback - the two ends need linking
-by hand (`pw-link <sink>:playback_* <source>:capture_*`, output first) and that
-link did not pass audio here. It also only works on the cable road: the page's
-`getUserMedia` needs a secure context, which `http://127.0.0.1` through
-`adb reverse` is and `http://<bnep ip>` is not.
+The **microphone** is the piece that works like DroidCam's Linux client: the
+kernel's in-tree **snd-aloop** card (an image loads it with `index=7` so it
+cannot take over the default card), the phone's PCM played into its playback
+side and recorded from its capture side as `alsa_input.platform-snd_aloop.N`.
+The page's **Mic on** sends signed 16-bit mono at 48 kHz as it is captured and
+the link wraps it into the loopback. It needs the module loaded, which is the
+image's job, and a secure context - so it is the cable road (`adb reverse` gives
+the phone a `localhost` origin) and not Bluetooth tethering.
+
+A **webcam** is a two-part answer. PipeWire itself can take a virtual camera:
+`pipewiresink mode=provide` with `media.class=Video/Source` and
+`media.role=Camera` puts a camera node in the graph, which PipeWire-aware
+applications enumerate - Firefox with `media.webrtc.camera.allow-pipewire`, OBS
+30+. **Camera on** streams JPEG frames from the phone into exactly that, and it
+was checked here: the node appears in `pw-dump` beside the real webcam. Chrome
+and the V4L2 applications (Zoom, Discord) do **not** enumerate PipeWire cameras,
+and for those there is only `v4l2loopback` - every implementation (DroidCam's
+`v4l2loopback-dc`, `scrcpy --v4l2-sink`, `obs-v4l2sink`) is that module. It is
+out-of-tree, so the only way to avoid DKMS is for the image to ship it prebuilt
+with its kernel. libcamera does not help: it is a capture stack, and its virtual
+drivers (`vivid`, `vimc`) generate test patterns, they cannot be fed.
 
 H.264 is a follow-up: `x264enc` ships with `shani-multimedia` (`gst-plugins-ugly`)
 on a real image, and over the USB road the phone's `localhost` is a secure

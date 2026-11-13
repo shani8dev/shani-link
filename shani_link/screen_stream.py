@@ -372,6 +372,71 @@ def audio_pipeline(sink: str) -> str:
             f"appsink name=out emit-signals=true sync=false max-buffers=64 drop=true")
 
 
+def microphone() -> "tuple[str, str]":
+    """(the source to record from, the sink to play into), or ("", why not).
+
+    The phone's microphone becomes a real microphone through the kernel's
+    **snd-aloop** card - the same mechanism DroidCam's Linux client uses: the
+    link plays the phone's PCM into the loopback's playback side and any
+    application records from its capture side, which PipeWire shows as
+    `alsa_input.platform-snd_aloop.N`. It is an in-tree module, so unlike
+    `v4l2loopback` it needs no DKMS - only to be loaded. An image loads it with
+    a high index (`options snd-aloop index=7`) so it cannot take over the
+    default card; the index is read from the graph rather than assumed.
+
+    Nothing here loads it: this is an unprivileged app, and loading a kernel
+    module is the system's job.
+    """
+    from shani_link import audio
+    index = None
+    for props in audio.nodes():
+        found = re.match(r"alsa_input\.platform-snd_aloop\.(\d+)$",
+                         str(props.get("node.name", "")))
+        if found:
+            index = found.group(1)
+            break
+    if index is None:
+        return "", ("the loopback sound card is not loaded - modprobe snd-aloop "
+                    "(an image loads it from modules-load.d)")
+    return (f"alsa_input.platform-snd_aloop.{index}",
+            f"alsa_output.platform-snd_aloop.{index}")
+
+
+def mic_pipeline(sink: str) -> str:
+    """Raw PCM from the phone into the loopback's playback side.
+
+    No container and no decoder: the page sends signed 16-bit mono at 48 kHz,
+    which `appsrc` wraps as it arrives. A MediaRecorder WebM would need a
+    parser and add a chunk of latency to every syllable.
+    """
+    return ("appsrc name=mic is-live=true format=time do-timestamp=true "
+            "max-bytes=4194304 ! "
+            "audio/x-raw,format=S16LE,rate=48000,channels=1 ! "
+            "audioconvert ! audioresample ! "
+            f"pipewiresink target-object={sink} sync=false")
+
+
+def camera_pipeline(width: int = 1280, height: int = 720, fps: int = 15) -> str:
+    """The phone's camera as a PipeWire **camera** - no kernel module.
+
+    A `pipewiresink` in `mode=provide` with `media.class=Video/Source` and
+    `media.role=Camera` is a camera node in the graph, which is what
+    PipeWire-aware applications enumerate (Firefox with
+    `media.webrtc.camera.allow-pipewire`, OBS 30+). Chrome and the V4L2 apps
+    (Zoom, Discord) do not, and for those there is only `v4l2loopback`.
+
+    JPEG in, because the browser produces it with `canvas.toBlob` and the
+    encoder is already in gst-plugins-good; `jpegdec` is the cost, a few
+    milliseconds a frame.
+    """
+    return ("appsrc name=cam is-live=true format=time do-timestamp=true "
+            "max-bytes=4194304 ! image/jpeg ! jpegdec ! videoconvert ! "
+            f"video/x-raw,format=YUY2,width={width},height={height},framerate={fps}/1 ! "
+            "pipewiresink mode=provide "
+            "stream-properties=\"properties,media.class=Video/Source,media.role=Camera\" "
+            "client-name=\"Shani Link Camera\"")
+
+
 class Codec:
     """One way of putting pictures on the wire: pipeline tail, page, framing."""
 
@@ -450,9 +515,9 @@ INPUT_CSS = """
 background:#000b;z-index:6}
 #type input{flex:1;min-width:0;padding:8px 10px;border-radius:8px;border:1px solid #555;
 background:#111;color:#eee;font:16px sans-serif}
-#type button{display:none}
-#sound{position:fixed;top:8px;right:8px;display:none;z-index:6;padding:8px 12px;
+#sound,#mic,#cam,#keys{position:fixed;top:8px;display:none;z-index:6;padding:8px 12px;
 border-radius:8px;border:1px solid #666;background:#000b;color:#eee;font:14px sans-serif}
+#sound{right:8px}#cam{right:96px}#mic{right:200px}#keys{right:296px}
 """
 
 INPUT_JS = """
@@ -460,6 +525,9 @@ const layer = document.getElementById("touch");
 const shown = document.querySelector("video,img");
 const points = new Map();
 let queued = 0;
+let mic = null;
+let cam = null;
+
 function send(path, body) {
   fetch(path, {method: "POST", headers: {"Content-Type": "application/json"},
                body: JSON.stringify(body || {}), keepalive: true}).catch(() => {});
@@ -522,23 +590,107 @@ kind.addEventListener("input", () => {
   typed = value;
 });
 kind.addEventListener("keydown", (event) => {
-  if (event.key === "Enter") { event.preventDefault(); send("/key", {text: "\n"}); }
+  if (event.key === "Enter") { event.preventDefault(); send("/key", {text: "\\n"}); }
 });
 
-document.getElementById("sound").addEventListener("click", () => {
+const keys = document.getElementById("keys");
+keys.addEventListener("click", () => {
+  const bar = document.getElementById("type");
+  const showing = bar.style.display === "flex";
+  bar.style.display = showing ? "none" : "flex";
+  keys.textContent = showing ? "Type" : "Hide";
+  if (!showing) kind.focus();
+});
+
+const sound = document.getElementById("sound");
+sound.addEventListener("click", () => {
   document.getElementById("sound-el").play().catch(() => {});
+});
+
+const micButton = document.getElementById("mic");
+micButton.addEventListener("click", async () => {
+  if (mic) {
+    try {
+      mic.node.disconnect(); mic.source.disconnect();
+      mic.stream.getTracks().forEach((track) => track.stop());
+      mic.ctx.close();
+    } catch (error) { /* already gone */ }
+    mic = null;
+    micButton.textContent = "Mic on";
+    fetch("/mic", {method: "POST", body: new Uint8Array(0)}).catch(() => {});
+    return;
+  }
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia(
+      {audio: {channelCount: 1, echoCancellation: true, noiseSuppression: true}});
+    const ctx = new AudioContext({sampleRate: 48000});
+    const source = ctx.createMediaStreamSource(stream);
+    const node = ctx.createScriptProcessor(4096, 1, 1);
+    node.onaudioprocess = (event) => {
+      const input = event.inputBuffer.getChannelData(0);
+      const pcm = new Int16Array(input.length);
+      for (let i = 0; i < input.length; i++) {
+        pcm[i] = Math.max(-1, Math.min(1, input[i])) * 32767;
+      }
+      fetch("/mic", {method: "POST", body: pcm.buffer}).catch(() => {});
+    };
+    const silent = ctx.createGain();
+    silent.gain.value = 0;
+    source.connect(node); node.connect(silent); silent.connect(ctx.destination);
+    mic = {stream: stream, ctx: ctx, node: node, source: source};
+    micButton.textContent = "Mic off";
+  } catch (error) {
+    micButton.textContent = "No microphone";
+  }
+});
+
+const camButton = document.getElementById("cam");
+camButton.addEventListener("click", async () => {
+  if (cam) {
+    clearInterval(cam.timer);
+    cam.stream.getTracks().forEach((track) => track.stop());
+    cam = null;
+    camButton.textContent = "Camera on";
+    fetch("/camera", {method: "POST", body: new Uint8Array(0)}).catch(() => {});
+    return;
+  }
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia(
+      {video: {facingMode: "environment", width: 1280, height: 720}, audio: false});
+    const video = document.createElement("video");
+    video.srcObject = stream; video.muted = true; video.playsInline = true;
+    await video.play();
+    const canvas = document.createElement("canvas");
+    canvas.width = 1280; canvas.height = 720;
+    const context = canvas.getContext("2d");
+    const sendFrame = () => {
+      context.drawImage(video, 0, 0, canvas.width, canvas.height);
+      canvas.toBlob((blob) => {
+        if (blob) fetch("/camera", {method: "POST", body: blob}).catch(() => {});
+      }, "image/jpeg", 0.7);
+    };
+    const timer = setInterval(sendFrame, 66);
+    cam = {stream: stream, video: video, timer: timer};
+    camButton.textContent = "Camera off";
+  } catch (error) {
+    camButton.textContent = "No camera";
+  }
 });
 
 fetch("/info").then((r) => r.json()).then((info) => {
   if (info.touch || info.pen) layer.style.display = "block";
   if (info.keyboard) document.getElementById("type").style.display = "flex";
-  if (info.sound) document.getElementById("sound").style.display = "block";
+  if (info.sound) sound.style.display = "block";
+  if (info.mic) micButton.style.display = "block";
+  if (info.camera) camButton.style.display = "block";
+  if (info.keyboard) keys.style.display = "block";
 }).catch(() => {});
 """
 
 
 def _page(media: str, extra_css: str = "") -> bytes:
-    """The viewer: the picture, the touch layer, the pen and the typing bar."""
+    """The viewer: the picture, the touch layer, the pen, the typing bar and the
+    three devices the phone can lend the desktop."""
     return ("<!doctype html><html><head>"
             '<meta name="viewport" content="width=device-width,initial-scale=1">'
             "<title>Chronoa screen</title><style>"
@@ -550,7 +702,10 @@ def _page(media: str, extra_css: str = "") -> bytes:
             + '<div id="type"><input id="kind" placeholder="Type on this computer…" '
               'autocomplete="off" autocapitalize="off" spellcheck="false">'
               '<button tabindex="-1">·</button></div>'
+            + '<button id="keys" type="button">Type</button>'
             + '<button id="sound" type="button">Sound on</button>'
+            + '<button id="cam" type="button">Camera on</button>'
+            + '<button id="mic" type="button">Mic on</button>'
             + '<audio id="sound-el" src="/audio" autoplay></audio>'
             + "<script>" + INPUT_JS + "</script></body></html>").encode()
 
@@ -587,6 +742,68 @@ class Stream:
         self.session_closed = session_closed or (lambda: False)
 
 
+class Mic:
+    """The upload half: raw PCM from the phone, pushed into the loopback.
+
+    One pipeline for the whole stream, created on the first chunk - the phone
+    sends 100 ms slices and a new pipeline per slice would never play.
+    """
+
+    def __init__(self, sink: str) -> None:
+        self.sink = sink
+        self._pipe = None
+        self._src = None
+        self._lock = threading.Lock()
+
+    def push(self, data: bytes) -> bool:
+        from gi.repository import Gst
+        with self._lock:
+            if self._pipe is None:
+                self._pipe = Gst.parse_launch(mic_pipeline(self.sink))
+                self._src = self._pipe.get_by_name("mic")
+                self._pipe.set_state(Gst.State.PLAYING)
+            self._src.emit("push-buffer", Gst.Buffer.new_wrapped(data))
+        return True
+
+    def close(self) -> None:
+        from gi.repository import Gst
+        with self._lock:
+            if self._pipe is not None:
+                self._pipe.set_state(Gst.State.NULL)
+                self._pipe = self._src = None
+
+
+class Camera:
+    """The upload half of the camera: JPEG frames into a PipeWire camera node.
+
+    One pipeline for the whole stream, created on the first frame, like `Mic`.
+    """
+
+    def __init__(self, width: int = 1280, height: int = 720, fps: int = 15) -> None:
+        self.width, self.height, self.fps = width, height, fps
+        self._pipe = None
+        self._src = None
+        self._lock = threading.Lock()
+
+    def push(self, jpeg: bytes) -> bool:
+        from gi.repository import Gst
+        with self._lock:
+            if self._pipe is None:
+                self._pipe = Gst.parse_launch(
+                    camera_pipeline(self.width, self.height, self.fps))
+                self._src = self._pipe.get_by_name("cam")
+                self._pipe.set_state(Gst.State.PLAYING)
+            self._src.emit("push-buffer", Gst.Buffer.new_wrapped(jpeg))
+        return True
+
+    def close(self) -> None:
+        from gi.repository import Gst
+        with self._lock:
+            if self._pipe is not None:
+                self._pipe.set_state(Gst.State.NULL)
+                self._pipe = self._src = None
+
+
 class StreamServer:
     """One viewer per connection, and an encoder that is restarted when it stops.
 
@@ -597,13 +814,18 @@ class StreamServer:
 
     def __init__(self, stream: Stream, host: str, port: int = PORT, on_fatal=None,
                  touch_surface=None, pen_surface=None, keyboard=None,
-                 sound_sink: str = "") -> None:
+                 sound_sink: str = "", mic_source: str = "",
+                 camera: bool = True) -> None:
         self.stream, self.host, self.port = stream, host, port
         self.on_fatal = on_fatal
         self.touch_surface = touch_surface
         self.pen_surface = pen_surface
         self.keyboard = keyboard
         self.sound_sink = sound_sink
+        self.mic_source = mic_source
+        self.mic = None
+        self.cam = None
+        self.camera = camera
         self.httpd: Optional[ThreadingHTTPServer] = None
 
     def serve(self) -> None:
@@ -612,6 +834,10 @@ class StreamServer:
         from gi.repository import Gst
         Gst.init(None)
         owner = self
+        if owner.mic_source:
+            owner.mic = Mic(owner.mic_source)
+        if owner.camera:
+            owner.cam = Camera()
 
         class Handler(BaseHTTPRequestHandler):
             def log_message(self, fmt, *args):
@@ -632,7 +858,9 @@ class StreamServer:
                     body = json.dumps({"touch": owner.touch_surface is not None,
                                        "pen": owner.pen_surface is not None,
                                        "keyboard": owner.keyboard is not None,
-                                       "sound": bool(owner.sound_sink)}).encode()
+                                       "sound": bool(owner.sound_sink),
+                                       "mic": bool(owner.mic_source),
+                                       "camera": bool(owner.camera)}).encode()
                     self.send_response(200)
                     self.send_header("Content-Type", "application/json")
                     self.send_header("Content-Length", str(len(body)))
@@ -661,6 +889,46 @@ class StreamServer:
 
             def do_POST(self):
                 """Touch, pen or keys: one small JSON frame from the phone."""
+                if self.path == "/camera":
+                    if owner.cam is None:
+                        self.send_error(404)
+                        return
+                    try:
+                        length = int(self.headers.get("Content-Length") or 0)
+                        frame = self.rfile.read(length)
+                    except OSError:
+                        return
+                    if not frame:                  # the person turned the camera off
+                        owner.cam.close()
+                    else:
+                        try:
+                            owner.cam.push(frame)
+                        except Exception:  # noqa: BLE001 - the graph can refuse a frame
+                            self.send_error(500)
+                            return
+                    self.send_response(204)
+                    self.end_headers()
+                    return
+                if self.path == "/mic":
+                    if owner.mic is None:
+                        self.send_error(404)
+                        return
+                    try:
+                        length = int(self.headers.get("Content-Length") or 0)
+                        chunk = self.rfile.read(length)
+                    except OSError:
+                        return
+                    if not chunk:                  # the person turned the microphone off
+                        owner.mic.close()
+                    else:
+                        try:
+                            owner.mic.push(chunk)
+                        except Exception:  # noqa: BLE001 - the graph can refuse a buffer
+                            self.send_error(500)
+                            return
+                    self.send_response(204)
+                    self.end_headers()
+                    return
                 if self.path == "/touch" and owner.touch_surface is not None:
                     self._read_json(lambda payload: owner.touch_surface.update(
                         payload.get("points") or []))
@@ -789,6 +1057,10 @@ class StreamServer:
         self.httpd.serve_forever()
 
     def stop(self) -> None:
+        if getattr(self, "mic", None) is not None:
+            self.mic.close()
+        if getattr(self, "cam", None) is not None:
+            self.cam.close()
         if self.httpd is not None:
             self.httpd.shutdown()
             self.httpd.server_close()

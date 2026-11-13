@@ -188,6 +188,13 @@ class _ShareSurface:
             on_changed=lambda state: _TOUCH.__setitem__("on", bool(state)))
         self._body.append(self._touch)
 
+        # What the phone's page carries, so the desktop describes the whole
+        # feature rather than the one switch that lives here.
+        self._body.append(common.row(
+            "On the phone",
+            "The picture, and buttons for sound, the microphone and the camera - "
+            "each off until it is pressed on the phone."))
+
         self._busy = False
 
     def _buttons(self) -> Gtk.Widget:
