@@ -14,8 +14,9 @@ Every function answers with a sentence a person can read; nothing raises for an
 ordinary failure (no adb, no phone, a locked screen, a timeout).
 
 Two questions answer in values rather than sentences, because a program rather
-than a person asks them: `ready_serial()` (which phone a cable can reach) and
-`display_size()` (how big its picture is) - both used by `screen_stream`.
+than a person asks them: `ready_serial()` (which phone a cable can reach),
+`ready_devices()` (which phones, and whether each is on a cable or on Wi-Fi) and
+`display_size()` (how big its picture is) - all used by `screen_stream`.
 """
 from __future__ import annotations
 
@@ -92,6 +93,34 @@ def ready_serial() -> "Tuple[str, str]":
     verbs get, with the state spelled out for a person.
     """
     return _pick("")
+
+
+def ready_devices() -> "List[Tuple[str, str]]":
+    """(serial, "usb"|"wifi") for every phone adb can reach right now.
+
+    `adb connect` always makes a serial of `host:port`, so the colon is the
+    difference between a cable and a wireless phone. The verbs still want one
+    named phone (`ready_serial`); this is for a caller with a preference.
+    """
+    return [(serial, "wifi" if ":" in serial else "usb")
+            for serial, state, _model in _devices() if state == "device"]
+
+
+#: `stay_on_while_plugged_in` is a bitmask: what each bit is for.
+STAY_AWAKE_BITS = {"AC": 1, "USB": 2, "Wireless": 4}
+
+
+def powered_by(serial: str) -> "Tuple[str, int]":
+    """(what the phone is charging from, its stay-awake bit), or ("", 0).
+
+    The setting is a bitmask, so telling a phone on a Qi pad to "stay on while
+    plugged in over USB" is a setting that does nothing - the phone dims anyway.
+    """
+    battery = _shell(serial, "dumpsys", "battery")
+    for name, bit in STAY_AWAKE_BITS.items():
+        if re.search(rf"{name} powered:\s*true", battery):
+            return name, bit
+    return "", 0
 
 
 def _shell(serial: str, *cmd: str) -> str:

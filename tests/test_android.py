@@ -80,6 +80,33 @@ def test_the_stream_gets_one_ready_phone_and_the_size_it_sees(fake_adb):
     assert ad.display_size("R58N123") == (1080, 2340)
 
 
+def test_a_ready_phone_says_whether_it_is_on_a_cable_or_on_wi_fi(fake_adb, monkeypatch):
+    """adb connect makes a serial of host:port, so the colon is the difference."""
+    assert ad.ready_devices() == [("R58N123", "usb")]
+    monkeypatch.setattr(ad, "_devices",
+                        lambda: [("192.168.1.20:41000", "device", "Pixel 8")])
+    assert ad.ready_devices() == [("192.168.1.20:41000", "wifi")]
+    monkeypatch.setattr(ad, "_devices", lambda: [("X1", "unauthorized", "")])
+    assert ad.ready_devices() == []
+
+
+def test_the_stay_awake_bit_is_the_one_the_phone_is_charging_from(fake_adb):
+    # dumpsys says USB here
+    assert ad.powered_by("R58N123") == ("USB", 2)
+
+
+def test_a_phone_on_a_wireless_charger_gets_the_wireless_bit(monkeypatch):
+    monkeypatch.setattr(ad, "_shell",
+                        lambda *_a: "Current Battery Service state:\n  Wireless powered: true\n")
+    assert ad.powered_by("X") == ("Wireless", 4)
+
+
+def test_a_phone_on_its_battery_has_no_stay_awake_bit(monkeypatch):
+    monkeypatch.setattr(ad, "_shell",
+                        lambda *_a: "Current Battery Service state:\n  AC powered: false\n")
+    assert ad.powered_by("X") == ("", 0)
+
+
 def test_a_phone_that_will_not_say_its_size_gets_none(monkeypatch):
     monkeypatch.setattr(ad, "_shell", lambda *_a: "null")
     assert ad.display_size("R58N123") is None

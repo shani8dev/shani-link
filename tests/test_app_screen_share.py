@@ -126,6 +126,23 @@ def test_the_answer_is_shown_in_full_not_truncated(dispatched):
     assert "answer for status" in shown, shown
 
 
+def test_the_page_offers_to_connect_a_phone(monkeypatch):
+    """Check can only say a phone is missing; this is the way to get one."""
+    fired = []
+
+    class App:
+        window = None
+
+        def activate_action(self, name, value=None):
+            fired.append((name, value))
+
+    page = surface_mod.build(App())
+    button = next(b for b in _buttons(page) if b.get_label() == "Connect a phone")
+    button.emit("clicked")
+    assert fired and fired[0][0] == "connect-device", fired
+    assert fired[0][1].unpack() == "android", fired
+
+
 def test_a_machine_that_cannot_share_says_what_is_missing(monkeypatch):
     """Not started, and the reason - the engine names the missing package."""
     from shani_link import screen_stream
@@ -138,31 +155,39 @@ def test_a_machine_that_cannot_share_says_what_is_missing(monkeypatch):
 def test_no_bluetooth_network_is_its_own_reason(monkeypatch):
     from shani_link import screen_stream
     monkeypatch.setattr(screen_stream, "gstreamer_ready", lambda: (True, ""))
-    monkeypatch.setattr(screen_stream, "usb_ready", lambda: (False, "no Android device on a cable"))
+    monkeypatch.setattr(screen_stream, "phone_serial", lambda: ("", "no Android device is connected"))
     monkeypatch.setattr(screen_stream, "bluetooth_address", lambda: None)
     said = surface_mod.act("status")
     # both roads are named: "not on Bluetooth" alone leaves a person hunting
-    # for a setting when the answer is a cable
+    # for a setting when the answer is a phone on a cable or Wi-Fi
     assert "not sharing its network over Bluetooth" in said, said
-    assert "no Android device on a cable" in said, said
+    assert "no Android device is connected" in said, said
 
 
-def test_the_cable_is_preferred_and_named(monkeypatch):
-    """A phone on a cable is the sturdier road, so it is the one offered."""
+def test_the_road_is_preferred_and_named(monkeypatch):
+    """A phone adb can reach is the sturdier road, so it is the one offered."""
     from shani_link import screen_stream
     monkeypatch.setattr(screen_stream, "gstreamer_ready", lambda: (True, ""))
-    monkeypatch.setattr(screen_stream, "usb_ready", lambda: (True, ""))
+    monkeypatch.setattr(screen_stream, "phone_serial", lambda: ("R5CT10", ""))
     monkeypatch.setattr(screen_stream, "bluetooth_address", lambda: "192.168.44.2")
     said = surface_mod.act("status")
     assert "127.0.0.1:8090" in said and "USB cable" in said, said
     assert "192.168.44.2" not in said, said
 
 
+def test_a_wireless_phone_is_named_as_wi_fi(monkeypatch):
+    from shani_link import screen_stream
+    monkeypatch.setattr(screen_stream, "gstreamer_ready", lambda: (True, ""))
+    monkeypatch.setattr(screen_stream, "phone_serial", lambda: ("192.168.1.20:41000", ""))
+    said = surface_mod.act("status")
+    assert "127.0.0.1:8090" in said and "over Wi-Fi" in said, said
+
+
 def test_start_tells_the_stream_which_road_it_was_given(monkeypatch):
     """The process is told, not left to probe again and disagree with the page."""
     from shani_link import screen_stream
     monkeypatch.setattr(screen_stream, "gstreamer_ready", lambda: (True, ""))
-    monkeypatch.setattr(screen_stream, "usb_ready", lambda: (True, ""))
+    monkeypatch.setattr(screen_stream, "phone_serial", lambda: ("192.168.1.20:41000", ""))
     monkeypatch.setattr(screen_stream, "bluetooth_address", lambda: "192.168.44.2")
     seen = {}
 
@@ -177,7 +202,7 @@ def test_start_tells_the_stream_which_road_it_was_given(monkeypatch):
     monkeypatch.setattr(surface_mod.subprocess, "Popen", Proc)
     monkeypatch.setitem(surface_mod._PROC, "proc", None)
     assert "http://127.0.0.1:8090" in surface_mod.act("start")
-    assert seen["env"]["SHANI_LINK_SCREEN_TRANSPORT"] == "usb", seen["env"]
+    assert seen["env"]["SHANI_LINK_SCREEN_TRANSPORT"] == "wifi", seen["env"]
     assert seen["argv"][1:] == ["-m", "shani_link.screen_stream"], seen["argv"]
 
 
@@ -185,7 +210,7 @@ def test_a_stream_that_ended_says_the_last_thing_it_did(monkeypatch):
     """The phone shows a frozen picture; the page has to know why."""
     from shani_link import screen_stream
     monkeypatch.setattr(screen_stream, "gstreamer_ready", lambda: (True, ""))
-    monkeypatch.setattr(screen_stream, "usb_ready", lambda: (False, "no Android device on a cable"))
+    monkeypatch.setattr(screen_stream, "phone_serial", lambda: ("", "no Android device is connected"))
     monkeypatch.setattr(screen_stream, "bluetooth_address", lambda: "192.168.44.2")
     log = surface_mod.log_path()
     log.parent.mkdir(parents=True, exist_ok=True)
@@ -221,7 +246,7 @@ def test_start_runs_the_stream_and_stop_ends_that_process(monkeypatch):
     """The stream is its own process, started once and stopped by its handle."""
     from shani_link import screen_stream
     monkeypatch.setattr(screen_stream, "gstreamer_ready", lambda: (True, ""))
-    monkeypatch.setattr(screen_stream, "usb_ready", lambda: (False, "no Android device on a cable"))
+    monkeypatch.setattr(screen_stream, "phone_serial", lambda: ("", "no Android device is connected"))
     monkeypatch.setattr(screen_stream, "bluetooth_address", lambda: "192.168.44.2")
     started = []
 

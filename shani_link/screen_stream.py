@@ -1,13 +1,16 @@
-"""Show this computer's screen on the phone, over the cable or Bluetooth.
+"""Show this computer's screen on the phone, over adb or Bluetooth.
 
-Two roads carry the same picture, and the cable is tried first:
+Two roads carry the same picture, and adb is tried first:
 
-- **USB** - `adb reverse tcp:8090 tcp:8090` makes the phone's own loopback
-  arrive at this computer, so the phone opens `http://127.0.0.1:8090` and the
-  picture never touches a network: no tethering, no `bnep0`, no firewall
-  exception. The cable carries megabytes where Bluetooth carried 61-72 KB/s, so
-  the size comes from the phone itself (`adb shell wm size`), capped at 1920 on
-  the long side and rounded to even.
+- **adb - a cable, or Wi-Fi debugging** - `adb reverse tcp:8090 tcp:8090`
+  makes the phone's own loopback arrive at this computer, so the phone opens
+  `http://127.0.0.1:8090` and the picture never touches a network: no
+  tethering, no `bnep0`, no firewall exception, and it makes no difference
+  whether the phone is on a cable or paired over Wi-Fi. Either way carries far
+  more than Bluetooth's 61-72 KB/s, so the size comes from the phone itself
+  (`adb shell wm size`), capped at 1920 on the long side and rounded to even.
+  A cable wins when both are connected: it is faster, and it does not depend on
+  the Wi-Fi staying up.
 - **Bluetooth** - the phone shares its network over Bluetooth (tethering), this
   computer joins it as `bnep0`, and the page is served on that address only, so
   nothing is reachable from Wi-Fi. 640x360 at 8 fps -> VP8 at ~400 kbit/s: the
@@ -23,14 +26,16 @@ PipeWire stream; GStreamer encodes it; a plain `<video>` (WebM) or `<img>`
   cannot be restarted is the portal session: a new one asks the person again,
   which they did not ask for, so a session the person ended ends the stream and
   says so instead of re-prompting behind their back.
-- **The phone stays awake** - the USB road sets `stay_on_while_plugged_in`'s
-  USB bit (a bitmask: 1 AC, 2 USB, 4 wireless) for as long as it runs, and puts
-  the original value back afterwards. A phone that dims after 30 seconds reads
-  as the feature being broken.
+- **The phone stays awake** - adb sets `stay_on_while_plugged_in`'s bit for
+  whatever the phone is actually charging from (1 AC, 2 USB, 4 wireless; asked
+  of the phone, not assumed), for as long as the stream runs, and puts the
+  original value back afterwards. A phone that dims after 30 seconds reads as
+  the feature being broken. A phone on its battery is told so: the setting does
+  nothing then, and only Android can change that.
 
-The cable road was written without a phone to try it on (none was connected);
-what is tested is everything it consults - the tunnel, the size, the recovery -
-against a fake `adb` in `tests/test_screen_stream.py`.
+The adb road was written without a phone to try it on; what is tested is
+everything it consults - the tunnel, the size, the recovery - against a fake
+`adb` in `tests/test_screen_stream.py`.
 
 Measured problems on the way are in AGENTS.md: Ubuntu's udev renamed bnep0 to
 enx<mac> and bluez dropped the link (fixed with a .link file, NamePolicy=keep
@@ -115,37 +120,46 @@ def bluetooth_address() -> Optional[str]:
     return m.group(2) if m else None
 
 
-# --- the cable: is there a phone, what size is it, and one tunnel -------------
+# --- the phone over adb: which one, what size, one tunnel ---------------------
 
 def phone_serial() -> "tuple[str, str]":
-    """(serial, problem): the one phone a cable can reach, or why there is none.
+    """(serial, problem): the phone to mirror to, or why there is none.
 
-    `adb devices` is the whole question. The phone is the first consent - a
-    device listed as `device` has already accepted this computer's key - so
-    nothing here asks the person for anything.
+    A cable wins over a wireless phone: it is faster, and it does not depend on
+    the Wi-Fi staying up. `adb devices` is the whole question - the phone is the
+    first consent, and a device listed as `device` has already accepted this
+    computer's key - so nothing here asks the person for anything. Two phones on
+    cables is the one answer that still belongs to them.
     """
     if not android.available():
         return "", android.NO_ADB
-    return android.ready_serial()
+    ready = android.ready_devices()
+    if not ready:
+        return "", android.ready_serial()[1]
+    wired = [serial for serial, road in ready if road == "usb"]
+    if len(wired) > 1:
+        return "", "more than one phone is on a cable; unplug one"
+    if wired:
+        return wired[0], ""
+    return ready[0][0], ""
 
 
-def usb_ready() -> "tuple[bool, str]":
-    """(can the cable carry the picture, why not) - nothing started."""
+def adb_ready() -> "tuple[bool, str]":
+    """(can adb carry the picture, why not) - nothing started."""
     _serial, problem = phone_serial()
     return (False, problem) if problem else (True, "")
 
 
 def choose() -> "tuple[str, str]":
-    """("usb"|"bluetooth", where the phone opens it) or ("", why neither works).
+    """("usb"|"wifi"|"bluetooth", where the phone opens it) or ("", why neither works).
 
-    The cable first: it is the sturdier road and the only one that needs no
-    tethering and no firewall exception. Bluetooth is not a filter of last
-    resort - it is the road that works with the phone in another room - so it is
-    still offered whenever no cable is there.
+    The phone over adb first, on whichever transport it is on; Bluetooth is not
+    a filter of last resort - it is the road that works with the phone in
+    another room - so it is still offered whenever adb cannot reach a phone.
     """
-    ok, problem = usb_ready()
-    if ok:
-        return "usb", f"{USB_HOST}:{PORT}"
+    serial, problem = phone_serial()
+    if serial:
+        return ("wifi" if ":" in serial else "usb"), f"{USB_HOST}:{PORT}"
     host = bluetooth_address()
     if host:
         return "bluetooth", f"{host}:{PORT}"
@@ -176,14 +190,14 @@ def _adb(args, serial: str = "", timeout: int = 10):
 
 
 @contextmanager
-def usb_link(port: int = PORT, serial: str = ""):
-    """Carry `port` over the cable, and keep the phone awake while it runs.
+def adb_link(port: int = PORT, serial: str = ""):
+    """Carry `port` over adb - a cable or Wi-Fi - and keep the phone awake.
 
-    Yields `(ok, why)`. Both the tunnel and the phone's own setting are undone on
-    the way out, including on an exception: a `stay_on_while_plugged_in` left at
-    "always" drains a battery for days after a demo, and a stale `adb reverse`
-    makes the next run look like it works when the phone is showing a page from
-    the last one.
+    Yields `(ok, note)`; on failure `note` is why. Both the tunnel and the
+    phone's own setting are undone on the way out, including on an exception: a
+    `stay_on_while_plugged_in` left at "always" drains a battery for days after
+    a demo, and a stale `adb reverse` makes the next run look like it works when
+    the phone is showing a page from the last one.
     """
     def adb_call(args) -> "tuple[bool, str]":
         try:
@@ -194,18 +208,22 @@ def usb_link(port: int = PORT, serial: str = ""):
 
     ok, out = adb_call(["reverse", f"tcp:{port}", f"tcp:{port}"])
     if not ok:
-        yield False, f"adb could not open the tunnel over the cable ({out or 'no answer'})"
+        yield False, f"adb could not open the tunnel ({out or 'no answer'})"
         return
 
+    note = ""
+    _source, bit = android.powered_by(serial)
+    if not bit:
+        note = "the phone is on its battery, so its screen may dim while it mirrors"
     original = None
     got, value = adb_call(["shell", "settings", "get", "global", "stay_on_while_plugged_in"])
-    if got and value.isdigit():
+    if bit and got and value.isdigit():
         original = int(value)
         adb_call(["shell", "settings", "put", "global", "stay_on_while_plugged_in",
-                  str(original | 2)])
+                  str(original | bit)])
 
     try:
-        yield True, ""
+        yield True, note
     finally:
         if original is not None:
             adb_call(["shell", "settings", "put", "global", "stay_on_while_plugged_in",
@@ -545,25 +563,26 @@ class StreamServer:
 # --- starting one -------------------------------------------------------------
 
 def pick_transport(requested: str) -> str:
-    """Which road to take: the one asked for, or the cable when there is one.
+    """Which road to take: the one asked for, or the best there is.
 
     `SHANI_LINK_SCREEN_TRANSPORT` is what the page settled on before it wrote
     the sentence the person just read. Honouring it is the difference between a
     stream that agrees with its own page and one that picks a different road
-    because the cable blinked between two probes.
+    because the Wi-Fi blinked between two probes.
     """
     if requested != "auto":
         return requested
     settled = os.environ.get("SHANI_LINK_SCREEN_TRANSPORT", "").strip()
-    if settled in ("usb", "bluetooth"):
+    if settled in ("usb", "wifi", "bluetooth"):
         return settled
-    return "usb" if usb_ready()[0] else "bluetooth"
+    return choose()[0] or "bluetooth"
 
 
 def _arguments(argv=None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Show this computer's screen on the phone.")
-    parser.add_argument("--transport", choices=("auto", "usb", "bluetooth"), default="auto",
-                        help="how to carry the picture (default: the cable when one is there)")
+    parser.add_argument("--transport", choices=("auto", "usb", "wifi", "bluetooth"),
+                        default="auto",
+                        help="how to carry the picture (default: adb, by cable or Wi-Fi, when a phone is there)")
     parser.add_argument("--codec", choices=tuple(CODECS), default="webm",
                         help="webm (a <video>) or mjpeg (an <img>, no JavaScript)")
     parser.add_argument("--seconds", type=float, default=0.0,
@@ -626,16 +645,18 @@ def main() -> None:
 
     transport = pick_transport(args.transport)
 
-    if transport == "usb":
+    if transport in ("usb", "wifi"):
         serial, problem = phone_serial()
         if problem:
-            sys.exit(f"No phone on the cable: {problem}.")
+            sys.exit(f"No phone adb can reach: {problem}.")
         size = android.display_size(serial) or FALLBACK_SIZE
         width, height = fit_to_phone(*size)
         print(f"Serving at the phone's size: {width}x{height}", flush=True)
-        with usb_link(PORT, serial) as (ok, said):
+        with adb_link(PORT, serial) as (ok, note):
             if not ok:
-                sys.exit(said)
+                sys.exit(note)
+            if note:
+                print(note, flush=True)
             try:
                 _run(USB_HOST, width, height, USB_FPS, USB_BITRATE, codec, args.seconds)
             except Exception as exc:  # noqa: BLE001 - the portal is a desktop service

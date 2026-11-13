@@ -1,9 +1,9 @@
 """The screen stream's own decisions: which road, what size, and what it does
 when the picture stops.
 
-No portal and no phone: the cable is a fake `adb` first on PATH, and the parts
-tested here are the ones the server consults. The server itself needs a desktop
-(a PipeWire stream and a portal session to answer), which is exactly why every
+No portal and no phone: adb is a fake `adb` first on PATH, and the parts tested
+here are the ones the server consults. The server itself needs a desktop (a
+PipeWire stream and a portal session to answer), which is exactly why every
 decision it makes was moved out of it.
 """
 import os
@@ -32,34 +32,55 @@ def test_fit_to_phone_turns_caps_and_makes_even():
 
 # --- which road --------------------------------------------------------------
 
-def test_choose_prefers_the_cable(monkeypatch):
-    monkeypatch.setattr(ss, "usb_ready", lambda: (True, ""))
+def test_choose_prefers_adb(monkeypatch):
+    monkeypatch.setattr(ss, "phone_serial", lambda: ("R5CT10", ""))
     monkeypatch.setattr(ss, "bluetooth_address", lambda: "192.168.44.2")
     assert ss.choose() == ("usb", f"127.0.0.1:{ss.PORT}")
 
 
-def test_without_a_cable_bluetooth_is_still_offered(monkeypatch):
-    monkeypatch.setattr(ss, "usb_ready", lambda: (False, "no Android device on a cable"))
+def test_a_phone_on_wi_fi_is_its_own_road(monkeypatch):
+    """Wireless debugging is adb, not a cable: same tunnel, same loopback."""
+    monkeypatch.setattr(ss, "phone_serial", lambda: ("192.168.1.20:41000", ""))
+    assert ss.choose() == ("wifi", f"127.0.0.1:{ss.PORT}")
+
+
+def test_without_adb_bluetooth_is_still_offered(monkeypatch):
+    monkeypatch.setattr(ss, "phone_serial", lambda: ("", "no Android device is connected"))
     monkeypatch.setattr(ss, "bluetooth_address", lambda: "192.168.44.2")
     assert ss.choose() == ("bluetooth", f"192.168.44.2:{ss.PORT}")
 
 
+def test_a_cable_wins_over_a_wireless_phone(monkeypatch):
+    """Faster, and it does not go away when the Wi-Fi does."""
+    from shani_link import android
+    monkeypatch.setattr(android, "_devices", lambda: [("R5CT10", "device", "Pixel 8"),
+                                                      ("192.168.1.20:41000", "device", "Pixel 8")])
+    assert ss.phone_serial() == ("R5CT10", "")
+
+
+def test_two_phones_on_cables_are_a_question_for_the_person(monkeypatch):
+    from shani_link import android
+    monkeypatch.setattr(android, "_devices", lambda: [("A", "device", ""), ("B", "device", "")])
+    serial, problem = ss.phone_serial()
+    assert serial == "" and "unplug one" in problem, problem
+
+
 def test_the_page_can_settle_the_road_for_the_stream(monkeypatch):
     """What the page told the person and what the stream does have to agree."""
-    monkeypatch.setattr(ss, "usb_ready", lambda: (False, "no cable"))
+    monkeypatch.setattr(ss, "phone_serial", lambda: ("", "no phone"))
     monkeypatch.setattr(ss, "bluetooth_address", lambda: "192.168.44.2")
     assert ss.pick_transport("auto") == "bluetooth"
-    monkeypatch.setenv("SHANI_LINK_SCREEN_TRANSPORT", "usb")
-    assert ss.pick_transport("auto") == "usb"
-    assert ss.pick_transport("bluetooth") == "bluetooth"
+    monkeypatch.setenv("SHANI_LINK_SCREEN_TRANSPORT", "wifi")
+    assert ss.pick_transport("auto") == "wifi"
+    assert ss.pick_transport("usb") == "usb"
 
 
-def test_with_neither_the_answer_names_both(monkeypatch):
-    monkeypatch.setattr(ss, "usb_ready", lambda: (False, "no Android device on a cable"))
+def test_a_wireless_phone_with_no_bluetooth_says_what_is_missing(monkeypatch):
+    monkeypatch.setattr(ss, "phone_serial", lambda: ("", "no Android device is connected"))
     monkeypatch.setattr(ss, "bluetooth_address", lambda: None)
     transport, why = ss.choose()
     assert transport == ""
-    assert "cable" in why and "Bluetooth" in why, why
+    assert "no Android device" in why and "Bluetooth" in why, why
 
 
 # --- the tunnel, against a fake adb ------------------------------------------
@@ -79,6 +100,7 @@ case "$1 $2" in
       "put global") echo "" ;;
       *) exit 2 ;;
     esac ;;
+  "shell dumpsys") printf 'Current Battery Service state:\n  AC powered: false\n  USB powered: true\n  level: 76\n' ;;
   "shell wm") printf 'Physical size: 1080x2400\nOverride size: 1080x2340\n' ;;
   *) echo "unexpected: $*" >&2; exit 1 ;;
 esac
@@ -99,20 +121,48 @@ def adb(tmp_path, monkeypatch):
     return calls
 
 
-def test_usb_link_opens_the_tunnel_and_keeps_the_phone_awake(adb):
-    with ss.usb_link(ss.PORT) as (ok, why):
-        assert ok, why
+def _battery(adb, tmp_path, text):
+    """Point the fake adb's `dumpsys battery` at another answer."""
+    path = tmp_path / "bin" / "adb"
+    script = path.read_text().replace(
+        "Current Battery Service state:\\n  AC powered: false\\n  USB powered: true\\n  level: 76\\n",
+        text)
+    path.write_text(script)
+
+
+def test_adb_link_opens_the_tunnel_and_keeps_the_phone_awake(adb):
+    with ss.adb_link(ss.PORT) as (ok, note):
+        assert ok, note
+        assert note == "", note
     calls = adb.read_text().splitlines()
     assert calls[0] == "reverse tcp:8090 tcp:8090", calls
-    # bitmask: 1 AC, 2 USB - the USB bit is added, the AC bit is kept
+    # the phone says it is on USB, so the USB bit is the one set; the AC bit is kept
     assert "shell settings put global stay_on_while_plugged_in 3" in calls, calls
     assert calls[-2:] == ["shell settings put global stay_on_while_plugged_in 1",
                           "reverse --remove tcp:8090"], calls
 
 
+def test_a_phone_on_a_wireless_charger_gets_the_wireless_bit(adb, tmp_path, monkeypatch):
+    monkeypatch.setenv("STAY_ON", "0")
+    _battery(adb, tmp_path, 'Current Battery Service state:\\n  Wireless powered: true\\n  level: 88\\n')
+    with ss.adb_link(ss.PORT) as (ok, _note):
+        assert ok
+    assert "shell settings put global stay_on_while_plugged_in 4" in adb.read_text(), \
+        "a Qi pad is the wireless bit, not the USB one"
+
+
+def test_a_phone_on_its_battery_is_told_it_may_dim(adb, tmp_path):
+    _battery(adb, tmp_path, 'Current Battery Service state:\\n  AC powered: false\\n  level: 42\\n')
+    with ss.adb_link(ss.PORT) as (ok, note):
+        assert ok
+        assert "may dim" in note, note
+    calls = adb.read_text().splitlines()
+    assert not any("stay_on_while_plugged_in" in call and "put" in call for call in calls), calls
+
+
 def test_a_phone_that_never_set_stay_awake_is_left_alone(adb, monkeypatch):
     monkeypatch.setenv("STAY_ON", "null")
-    with ss.usb_link(ss.PORT) as (ok, _why):
+    with ss.adb_link(ss.PORT) as (ok, _note):
         assert ok
     calls = adb.read_text().splitlines()
     assert not any("stay_on_while_plugged_in" in call and "put" in call for call in calls), calls
@@ -121,7 +171,7 @@ def test_a_phone_that_never_set_stay_awake_is_left_alone(adb, monkeypatch):
 
 def test_a_tunnel_that_will_not_open_says_so_and_changes_nothing(adb, monkeypatch):
     monkeypatch.setenv("FAIL_REVERSE", "1")
-    with ss.usb_link(ss.PORT) as (ok, why):
+    with ss.adb_link(ss.PORT) as (ok, why):
         assert not ok and "tunnel" in why, why
     calls = adb.read_text().splitlines()
     assert not any("stay_on" in call for call in calls), calls
@@ -130,7 +180,7 @@ def test_a_tunnel_that_will_not_open_says_so_and_changes_nothing(adb, monkeypatc
 
 def test_the_tunnel_is_undone_even_when_the_stream_raises(adb):
     with pytest.raises(RuntimeError):
-        with ss.usb_link(ss.PORT) as (ok, _why):
+        with ss.adb_link(ss.PORT) as (ok, _note):
             assert ok
             raise RuntimeError("the encoder exploded")
     assert adb.read_text().splitlines()[-1] == "reverse --remove tcp:8090"
@@ -138,9 +188,8 @@ def test_the_tunnel_is_undone_even_when_the_stream_raises(adb):
 
 def test_this_machine_lists_the_phone_as_ready_through_the_engine(adb):
     """The page's "is there a phone?" goes through `android`, not a second parser."""
-    from shani_link import android
     assert ss.phone_serial() == ("R5CT10", "")
-    assert ss.usb_ready() == (True, "")
+    assert ss.adb_ready() == (True, "")
 
 
 # --- when the picture stops ---------------------------------------------------

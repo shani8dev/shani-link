@@ -1,11 +1,12 @@
 """Screen share: this computer's screen, on a paired phone.
 
 `shani_link.screen_stream` does it - the ScreenCast portal round trip, the
-encoder, the one-viewer server - over the USB cable when one is there and over
-the phone's Bluetooth network when one is not. Moved here from Shani Chronoa,
-where the panel went through the assistant's `screen_to_phone` skill and its
-`screen-share-enabled` consent. Here pressing Start is the person's own act; the
-desktop's ScreenCast portal still asks them what to share, every time.
+encoder, the one-viewer server - over adb (a cable or Wi-Fi debugging) when a
+phone is reachable that way, and over the phone's Bluetooth network when one is
+not. Moved here from Shani Chronoa, where the panel went through the assistant's
+`screen_to_phone` skill and its `screen-share-enabled` consent. Here pressing
+Start is the person's own act; the desktop's ScreenCast portal still asks them
+what to share, every time.
 
 **The stream is a separate process** (`python -m shani_link.screen_stream`),
 because the portal round trip wants a GLib main loop of its own and a stream
@@ -38,7 +39,10 @@ from shani_link import paths  # noqa: E402
 
 TITLE = "Screen share"
 ICON = "send-to-symbolic"
-SUBTITLE = "Show this computer's screen on your phone, over the cable or Bluetooth."
+SUBTITLE = "Show this computer's screen on your phone, over a cable, Wi-Fi or Bluetooth."
+
+#: The name of each road, as a person would say it.
+_ROADS = {"usb": "over the USB cable", "wifi": "over Wi-Fi", "bluetooth": "over Bluetooth"}
 
 
 #: The running stream, tracked by its process (never found again by name).
@@ -64,8 +68,7 @@ def last_words() -> str:
 
 def road_detail(transport: str, where: str) -> str:
     """The sentence for one road: the address, and which road it is."""
-    road = "over the USB cable" if transport == "usb" else "over Bluetooth"
-    return f"http://{where} would serve it {road}"
+    return f"http://{where} would serve it {_ROADS.get(transport, 'over adb')}"
 
 
 def check() -> "tuple[str, str]":
@@ -154,9 +157,9 @@ class _ShareSurface:
         self._group = common.group()
         self._body.append(self._group)
         self._row = common.row("Share this screen with your phone",
-                               "Plug the phone in with USB debugging on, or turn on "
-                               "its Bluetooth tethering and connect this computer to it. "
-                               "You choose what to share.",
+                               "Turn on USB debugging and connect by cable or Wi-Fi, "
+                               "or turn on the phone's Bluetooth tethering. You choose "
+                               "what to share.",
                                suffix=self._buttons())
         self._group.add(self._row)
         #: What the last action said, in full - a truncated one-line label is not
@@ -171,6 +174,13 @@ class _ShareSurface:
 
     def _buttons(self) -> Gtk.Widget:
         box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+
+        # The fix for the most common failure, one click away: a phone that is
+        # not reachable yet. Connect a device does the USB and Wi-Fi handshake
+        # (QR code or pairing code) that Check can only report as missing.
+        self._connect = common.connect_button(self._app, "android", label="Connect a phone")
+        self._connect.set_tooltip_text("Pair the phone over a cable or Wi-Fi - by QR code or pairing code")
+        box.append(self._connect)
 
         self._check = Gtk.Button(label="Check")
         self._check.set_tooltip_text("See whether this computer can share its screen now (can take a minute)")

@@ -26,8 +26,9 @@ finds, and every page says plainly what it needs when something is missing.
   file sent to the phone, over a USB cable.
 - **Sharing files** - send a file to your phone; receive what your phone
   shares to the computer over Bluetooth into Downloads.
-- **This screen on your phone** - over a USB cable at the phone's own size, or
-  over the phone's Bluetooth network when there is no cable.
+- **This screen on your phone** - over adb (a USB cable, or Wi-Fi debugging) at
+  the phone's own size, or over the phone's Bluetooth network when adb cannot
+  reach it.
 - **FM radio, NFC and infrared** - listen to an FM station live or play a
   recording, read NFC tags and write links to stickers, learn the buttons of
   a remote control and press them from here.
@@ -44,7 +45,7 @@ finds, and every page says plainly what it needs when something is missing.
 | Android phone tools | A USB cable and USB debugging turned on in the phone's Developer options |
 | Phone link (files over Wi-Fi) | The KDE Connect app on the phone, on the same Wi-Fi; to receive, turn on "Receive files from your phone over Wi-Fi" (Background) - it opens KDE Connect's ports in the firewall until turned off or a restart |
 | Phone link (one clipboard) | The KDE Connect app on the phone, paired; turn on "Share the clipboard with your phone" (Background, off by default). Copy on one, paste on the other; what a password manager marks secret is never sent, and the shell's clipboard history says what came from the phone |
-| This screen on your phone | A USB cable and USB debugging on (or the phone's Bluetooth tethering); GStreamer on this computer |
+| This screen on your phone | USB debugging - on a cable or over Wi-Fi - or the phone's Bluetooth tethering; GStreamer on this computer |
 | FM radio | An RTL-SDR USB stick (RTL2832U) and `rtl_fm` (rtl-sdr) to listen live, played through PipeWire (`pw-play`); recordings play without the stick |
 | NFC | A USB NFC reader that works with libnfc (for example an ACR122U) |
 | Infrared remote | An infrared receiver (a `/dev/lirc*` device) to learn buttons; a transmitter (a `/dev/lirc*` that can send) to press a remote's buttons through lircd (`irsend`), or send a raw code with `ir-ctl` (v4l-utils) |
@@ -103,10 +104,10 @@ it connected so its own find-my-phone, music and camera buttons work here.
 ### Devices
 
 Paired devices at a glance; an Android phone on a USB cable; your phone on
-the same Wi-Fi with KDE Connect; and this screen shown on your phone - over that
-same cable when it is plugged in, and over the phone's Bluetooth tethering when
-it is not. With nothing connected yet, the page says so and offers the one thing
-to do:
+the same Wi-Fi with KDE Connect; and this screen shown on your phone - over adb
+(a cable, or Wi-Fi debugging) when it can reach a phone that way, and over the
+phone's Bluetooth tethering when it cannot. With nothing connected yet, the page
+says so and offers the one thing to do:
 
 ![No phone connected yet](docs/screenshots/devices-empty.png)
 
@@ -210,7 +211,7 @@ Chronoa keeps thin skills that call this package:
 - the phone over plain Bluetooth: calls (PipeWire telephony), texts (MAP)
 - MoYoung ("Da Fit") watches: health data, staying connected, the watch's buttons
 - this computer's Bluetooth roles: a remote (BLE), music control (AVRCP), battery
-- pairing, and receiving files (OBEX); Android over adb; this screen on the phone (over that cable, or Bluetooth tethering)
+- pairing, and receiving files (OBEX); Android over adb; this screen on the phone (over that adb, by cable or Wi-Fi, or Bluetooth)
 - FM radio (an RTL-SDR, demodulated here), NFC tags, infrared remotes
 - the Android companion app (android/chronoa-cast, now in this repo)
 
