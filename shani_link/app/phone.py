@@ -400,7 +400,10 @@ stackswitcher button {
                 except tether.TetherError:
                     internet = None
                 hotspot = tether.hotspot()
-            return dev, battery, which, (target, internet), iphone, hotspot
+                usb = tether.usb_state()
+            else:
+                usb = {"device": "", "on": False}
+            return dev, battery, which, (target, internet), iphone, hotspot, usb
 
         def done(result):
             self._iphone = False
@@ -415,7 +418,7 @@ stackswitcher button {
                 self.set_status(common.STATUS_ATTENTION, "Could not reach your phone", str(result))
                 self._phone_changed()
                 return
-            dev, battery, which, (target, internet), iphone, hotspot = result
+            dev, battery, which, (target, internet), iphone, hotspot, usb = result
             self.device = dev
             self._iphone = bool(iphone)
             self._phone_bluetooth = str(which) == "bluetooth"
@@ -436,6 +439,8 @@ stackswitcher button {
                 self.status_box.append(self._iphone_row(dev))
             if internet is not None:
                 self.status_box.append(self._internet_row(target, internet))
+            if usb.get("device"):
+                self.status_box.append(self._usb_row(usb))
             if hotspot:
                 self.status_box.append(self._hotspot_row(hotspot))
             self._phone_changed()
@@ -463,6 +468,53 @@ stackswitcher button {
         row.add_prefix(Gtk.Image(icon_name="network-wireless-symbolic"))
         holder.append(row)
         self.hotspot_row = row
+        return holder
+
+    #: The cable's words.
+    USB_INTERNET = "Use the phone's internet over the cable"
+
+    def _usb_row(self, usb: dict) -> Gtk.Widget:
+        """One switch for the cable: the phone's RNDIS network, brought up with
+        NetworkManager. The cable needs no pairing and no address."""
+        device = str(usb.get("device") or "")
+        holder = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE, margin_top=6)
+        holder.add_css_class("boxed-list")
+        row = Adw.ActionRow(title=self.USB_INTERNET)
+        row.add_prefix(Gtk.Image(icon_name="network-wired-symbolic"))
+        switch = Gtk.Switch(active=bool(usb.get("on")), valign=Gtk.Align.CENTER)
+        row.add_suffix(switch)
+        row.set_activatable_widget(switch)
+        idle = (f"{device} is connected" if usb.get("on")
+                else f"Browse with the phone's mobile data over the cable ({device})")
+        row.set_subtitle(GLib.markup_escape_text(idle))
+        holder.append(row)
+        self.usb_row, self.usb_switch = row, switch
+        quiet = {"on": False}
+
+        def flipped(*_a) -> None:
+            if quiet["on"]:
+                return
+            on = switch.get_active()
+            switch.set_sensitive(False)
+            row.set_subtitle("Connecting..." if on else "Stopping...")
+
+            def work():
+                from shani_link import tether
+                return tether.usb(on)
+
+            def done(result):
+                switch.set_sensitive(True)
+                if isinstance(result, Exception):
+                    quiet["on"] = True
+                    switch.set_active(not on)
+                    quiet["on"] = False
+                    row.set_subtitle(GLib.markup_escape_text(str(result)))
+                    self.toast(GLib.markup_escape_text(str(result).split(" - ")[0]))
+                    return
+                row.set_subtitle(GLib.markup_escape_text(
+                    str(result) if on else f"Browse with the phone's mobile data over the cable ({device})"))
+            _in_thread(work, done)
+        switch.connect("notify::active", flipped)
         return holder
 
     def _internet_row(self, target: "tuple[str, str]", internet: dict) -> Gtk.Widget:

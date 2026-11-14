@@ -150,3 +150,4 @@ def test_a_text_is_addressed_by_picking_a_contact(monkeypatch, tmp_path):
     priya = next(r for r in rows if r.recipient[0] == "Priya Iyer")
     priya.emit("activated")
     assert p.to.get_text() == "+91 99870 33210"
+

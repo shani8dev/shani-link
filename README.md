@@ -57,6 +57,7 @@ finds, and every page says plainly what it needs when something is missing.
 | Phone link (files over Wi-Fi) | The KDE Connect app on the phone, on the same Wi-Fi; to receive, turn on "Receive files from your phone over Wi-Fi" (Background) - it opens KDE Connect's ports in the firewall until turned off or a restart |
 | Phone link (one clipboard) | The KDE Connect app on the phone, paired; turn on "Share the clipboard with your phone" (Background, off by default). Copy on one, paste on the other; what a password manager marks secret is never sent, and the shell's clipboard history says what came from the phone |
 | This screen on your phone | USB debugging - on a cable or over Wi-Fi - or the phone's Bluetooth tethering; GStreamer on this computer |
+| Phone internet over the cable | A USB cable with USB debugging on: the phone's RNDIS network through NetworkManager |
 | Touch on the phone | `/dev/uinput` (the `input` group; ShaniOS ships `80-uinput.rules`) and the same GStreamer |
 | Sound on the phone | PipeWire and a default audio sink (`pw-metadata`) |
 | Microphone from the phone | `snd-aloop` (in-tree; load with `index=7`) and a cable (a secure context) |
