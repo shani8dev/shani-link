@@ -741,6 +741,18 @@ def record_pipeline(fd: int, node: int, fps: int, bitrate: int, path: str) -> st
             f"webmmux streamable=true ! filesink location={path}")
 
 
+def still_pipeline(fd: int, node: int) -> str:
+    """The portal's stream as one PNG, taken on the first frame that arrives.
+
+    A still is the same capture as the mirror and the recording, so it can be one
+    window (`--window`): the person picks it, and the picture is exactly that
+    window's, not a rectangle of the screen around it.
+    """
+    return (f"pipewiresrc fd={fd} path={node} do-timestamp=true keepalive-time=1000 ! "
+            f"videoconvert ! pngenc ! "
+            f"appsink name=shot emit-signals=true sync=false max-buffers=1 drop=true")
+
+
 class Stream:
     """Everything one stream needs: the portal's node, the size, the codec.
 
@@ -1114,6 +1126,8 @@ def _arguments(argv=None) -> argparse.Namespace:
                         help="share one window (the person picks it) instead of a monitor")
     parser.add_argument("--record", metavar="FILE",
                         help="record the portal's stream to FILE (webm) and exit")
+    parser.add_argument("--stills", metavar="FILE",
+                        help="save one frame to FILE (png) and exit")
     parser.add_argument("--touch", action="store_true",
                         help="let fingers on the phone tap and drag on this computer "
                              "(also SHANI_LINK_SCREEN_TOUCH=1)")
@@ -1241,6 +1255,58 @@ def _record(path: str, window: bool, seconds: float) -> None:
         cast.close()
 
 
+def _stills(path: str, window: bool) -> None:
+    """Save one frame as a PNG, and stop."""
+    import gi
+    gi.require_version("Gst", "1.0")
+    from gi.repository import GLib, Gst
+    Gst.init(None)
+    cast = ScreenCast()
+    try:
+        fd, node = cast.start(window=window)                  # the person answers here
+        pipe = Gst.parse_launch(still_pipeline(fd, node))
+        sink = pipe.get_by_name("shot")
+        loop = GLib.MainLoop()
+        box = {}
+
+        def on_sample(appsink):
+            buf = appsink.emit("pull-sample").get_buffer()
+            ok, info = buf.map(Gst.MapFlags.READ)
+            if ok:
+                try:
+                    with open(path, "wb") as handle:
+                        handle.write(bytes(info.data))
+                except OSError as exc:
+                    box["error"] = str(exc)
+                finally:
+                    buf.unmap(info)
+            box["done"] = True
+            loop.quit()
+            return Gst.FlowReturn.OK
+
+        def on_bus(_bus, message):
+            if message.type == Gst.MessageType.ERROR:
+                box["error"] = message.parse_error()[0].message
+                loop.quit()
+            return True
+
+        sink.connect("new-sample", on_sample)
+        pipe.get_bus().add_watch(GLib.PRIORITY_DEFAULT, on_bus)
+        pipe.set_state(Gst.State.PLAYING)
+        GLib.timeout_add_seconds(60, loop.quit)
+        loop.run()
+        pipe.set_state(Gst.State.NULL)
+        if box.get("error"):
+            print(f"Could not take the picture: {box['error']}", flush=True)
+            sys.exit(1)
+        if not box.get("done"):
+            print("No picture arrived in a minute.", flush=True)
+            sys.exit(1)
+        print(f"Saved {path}", flush=True)
+    finally:
+        cast.close()
+
+
 def _serve(args: argparse.Namespace, codec: Codec, surface, pen_surface, keyboard,
            sound_sink: str = "", window: bool = False) -> None:
     transport = pick_transport(args.transport)
@@ -1289,6 +1355,13 @@ def main() -> None:
         if not path.endswith(".webm"):
             path += ".webm"
         _record(path, args.window, args.seconds)
+        return
+
+    if args.stills:
+        path = os.path.abspath(os.path.expanduser(args.stills))
+        if not path.endswith(".png"):
+            path += ".png"
+        _stills(path, args.window)
         return
 
     wanted = args.touch or os.environ.get("SHANI_LINK_SCREEN_TOUCH", "").lower() in ("1", "true", "yes")

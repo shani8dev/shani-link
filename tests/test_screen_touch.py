@@ -365,3 +365,10 @@ def test_the_record_pipeline_is_the_webm_tail_into_a_file():
     assert "vp8enc" in line and "webmmux streamable=true" in line
     assert "filesink location=/tmp/x.webm" in line
     assert "appsink" not in line
+
+
+def test_the_still_pipeline_is_one_png_from_the_portal():
+    line = ss.still_pipeline(5, 43)
+    assert "pipewiresrc fd=5 path=43" in line
+    assert "pngenc" in line and 'appsink name=shot' in line
+    assert "filesink" not in line and "vp8enc" not in line
