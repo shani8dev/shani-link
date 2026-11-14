@@ -46,6 +46,8 @@ Bluetooth tethering is on.
 from __future__ import annotations
 
 import argparse
+import base64
+import hashlib
 import json
 import logging
 import os
@@ -530,7 +532,16 @@ let queued = 0;
 let mic = null;
 let cam = null;
 
+let ws = null, wsOpen = false;
+try {
+  ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws");
+  ws.onopen = () => { wsOpen = true; };
+  ws.onclose = () => { wsOpen = false; ws = null; };
+} catch (error) { ws = null; }
 function send(path, body) {
+  if (wsOpen && ws) {
+    try { ws.send(JSON.stringify(Object.assign({t: path.slice(1)}, body))); return; } catch (e) {}
+  }
   fetch(path, {method: "POST", headers: {"Content-Type": "application/json"},
                body: JSON.stringify(body || {}), keepalive: true}).catch(() => {});
 }
@@ -741,6 +752,27 @@ def record_pipeline(fd: int, node: int, fps: int, bitrate: int, path: str) -> st
             f"webmmux streamable=true ! filesink location={path}")
 
 
+WS_GUID = b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+
+
+def _ws_accept(key: str) -> str:
+    """RFC 6455's handshake answer: SHA-1 of the key and the magic, base64."""
+    return base64.b64encode(hashlib.sha1((key + WS_GUID.decode()).encode()).digest()).decode()
+
+
+def _ws_text(payload: bytes) -> bytes:
+    """One unmasked text frame (the server's pong, and tests' expectations)."""
+    n = len(payload)
+    head = bytes([0x81])
+    if n < 126:
+        head += bytes([n])
+    elif n < 65536:
+        head += bytes([126]) + struct.pack(">H", n)
+    else:
+        head += bytes([127]) + struct.pack(">Q", n)
+    return head + payload
+
+
 def still_pipeline(fd: int, node: int) -> str:
     """The portal's stream as one PNG, taken on the first frame that arrives.
 
@@ -869,10 +901,23 @@ class StreamServer:
             owner.cam = Camera()
 
         class Handler(BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"          # the WebSocket upgrade is HTTP/1.1
             def log_message(self, fmt, *args):
                 logger.info("screen stream: %s - %s", self.client_address[0], fmt % args)
 
             def do_GET(self):
+                if self.path == "/ws":
+                    if (self.headers.get("Upgrade") or "").lower() != "websocket":
+                        self.send_error(400)
+                        return
+                    self.send_response(101)
+                    self.send_header("Upgrade", "websocket")
+                    self.send_header("Connection", "Upgrade")
+                    self.send_header("Sec-WebSocket-Accept",
+                                     _ws_accept(self.headers.get("Sec-WebSocket-Key") or ""))
+                    self.end_headers()
+                    self._ws_loop()
+                    return
                 if self.path in ("/", "/index.html"):
                     body = owner.stream.codec.page()
                     self.send_response(200)
@@ -915,6 +960,62 @@ class StreamServer:
                 self.send_header("Cache-Control", "no-store")
                 self.end_headers()
                 self._pump()
+
+            def _ws_read(self):
+                """One frame (masked, from the browser), or (None, None) at the end."""
+                head = self.rfile.read(2)
+                if len(head) < 2:
+                    return None, None
+                opcode = head[0] & 0x0F
+                count = head[1] & 0x7F
+                if count == 126:
+                    count = struct.unpack(">H", self.rfile.read(2))[0]
+                elif count == 127:
+                    count = struct.unpack(">Q", self.rfile.read(8))[0]
+                mask = self.rfile.read(4) if head[1] & 0x80 else b""
+                data = self.rfile.read(count)
+                if mask:
+                    data = bytes(byte ^ mask[i % 4] for i, byte in enumerate(data))
+                return opcode, data
+
+            def _ws_loop(self) -> None:
+                """Text frames are the input; a close ends the connection."""
+                while True:
+                    opcode, data = self._ws_read()
+                    if opcode is None:
+                        return
+                    if opcode == 0x8:                     # close
+                        try:
+                            self.wfile.write(_ws_text(b""))
+                            self.wfile.flush()
+                        except OSError:
+                            pass
+                        return
+                    if opcode == 0x9:                     # ping
+                        try:
+                            self.wfile.write(_ws_text(data))
+                            self.wfile.flush()
+                        except OSError:
+                            return
+                        continue
+                    if opcode != 0x1:
+                        continue
+                    try:
+                        message = json.loads(data or b"{}")
+                    except ValueError:
+                        continue
+                    if not isinstance(message, dict):
+                        continue
+                    kind = message.get("t")
+                    try:
+                        if kind == "touch" and owner.touch_surface is not None:
+                            owner.touch_surface.update(message.get("points") or [])
+                        elif kind == "pen" and owner.pen_surface is not None:
+                            owner.pen_surface.update(message)
+                        elif kind == "key" and owner.keyboard is not None:
+                            self._type(message)
+                    except OSError:
+                        return
 
             def do_POST(self):
                 """Touch, pen or keys: one small JSON frame from the phone."""

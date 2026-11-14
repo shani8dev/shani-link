@@ -3,7 +3,9 @@
 The server is the real one on a loopback port; the encoder is not opened, because
 a POST never touches it - only `/stream` does.
 """
+import base64
 import json
+import socket
 import threading
 import time
 import urllib.error
@@ -372,3 +374,54 @@ def test_the_still_pipeline_is_one_png_from_the_portal():
     assert "pipewiresrc fd=5 path=43" in line
     assert "pngenc" in line and 'appsink name=shot' in line
     assert "filesink" not in line and "vp8enc" not in line
+
+
+# --- the WebSocket: the low-latency path for fingers and keys -------------------
+
+def _ws_connect(port):
+    sock = socket.create_connection(("127.0.0.1", port), timeout=5)
+    key = base64.b64encode(b"0123456789abcdef").decode()
+    sock.sendall((f"GET /ws HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nUpgrade: websocket\r\n"
+                  f"Connection: Upgrade\r\nSec-WebSocket-Key: {key}\r\n"
+                  f"Sec-WebSocket-Version: 13\r\n\r\n").encode())
+    head = b""
+    while b"\r\n\r\n" not in head:
+        head += sock.recv(1)
+    assert "101" in head.decode(errors="replace"), head
+    return sock
+
+
+def _ws_send(sock, payload: bytes):
+    mask = b"\x01\x02\x03\x04"
+    masked = bytes(byte ^ mask[i % 4] for i, byte in enumerate(payload))
+    sock.sendall(bytes([0x81, 0x80 | len(payload)]) + mask + masked)
+
+
+def test_a_websocket_touch_frame_reaches_the_surface():
+    recorder = Recorder()
+    streamer, port = _serve(recorder)
+    try:
+        sock = _ws_connect(port)
+        _ws_send(sock, b'{"t":"touch","points":[{"id":1,"x":0.5,"y":0.5}]}')
+        deadline = time.monotonic() + 3
+        while not recorder.frames and time.monotonic() < deadline:
+            time.sleep(0.02)
+        sock.close()
+    finally:
+        streamer.stop()
+    assert recorder.frames == [[{"id": 1, "x": 0.5, "y": 0.5}]]
+
+
+def test_a_websocket_key_frame_reaches_the_keyboard():
+    board = KeyRecorder()
+    streamer, port = _serve(Recorder(), keyboard=board)
+    try:
+        sock = _ws_connect(port)
+        _ws_send(sock, b'{"t":"key","text":"hello"}')
+        deadline = time.monotonic() + 3
+        while not board.text and time.monotonic() < deadline:
+            time.sleep(0.02)
+        sock.close()
+    finally:
+        streamer.stop()
+    assert board.text == ["hello"]

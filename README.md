@@ -299,7 +299,9 @@ outputs, the mirror and the touch layer here are already what a second screen
 would need.
 
 Touch and typing are the half that is here: `/dev/uinput`, the `input` group, a
-type-B touchscreen (ShaniOS ships `80-uinput.rules`), a pen and a keyboard. A
+type-B touchscreen (ShaniOS ships `80-uinput.rules`), a pen and a keyboard. The
+page sends fingers and keys over a WebSocket when it can open one - no HTTP round
+trip per frame — and over POST when it cannot. A
 window with `block-out-from "screencast"` is black on the phone. **Sound** is
 the other half that works: the default sink's monitor, encoded to Opus and
 played in the browser.
