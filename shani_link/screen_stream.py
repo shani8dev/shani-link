@@ -333,10 +333,10 @@ class ScreenCast:
         self.sender = self.bus.get_unique_name().lstrip(":").replace(".", "_")
         self.session = ""
         self.closed = False
+        self._closed_subscription = None
 
-    def available_source_types(self) -> "list[int]":
-        """Which source types the portal backend offers (1 monitor, 2 window,
-        4 virtual). Reads the `AvailableSourceTypes` property."""
+    def available_source_types(self) -> int:
+        """The portal's source-type bitmask; an unreadable property raises."""
         GLib = self.GLib
         try:
             result = self.bus.call_sync(
@@ -347,7 +347,7 @@ class ScreenCast:
                     "(ss)",
                     ("org.freedesktop.portal.ScreenCast", "AvailableSourceTypes"),
                 ),
-                None,
+                GLib.VariantType.new("(v)"),
                 0,
                 5000,
                 None,
@@ -356,14 +356,11 @@ class ScreenCast:
             raise RuntimeError(
                 f"could not ask the portal what sources it offers ({exc})"
             )
-        return [int(t) for t in result.unpack()[0].unpack()]
+        return result.unpack()[0]
 
     def supports_virtual(self) -> bool:
-        """True if the portal backend can create a virtual output."""
-        try:
-            return self.SOURCE_VIRTUAL in self.available_source_types()
-        except RuntimeError:
-            return False
+        """Whether VIRTUAL is advertised; unknown is an error, not False."""
+        return bool(self.available_source_types() & self.SOURCE_VIRTUAL)
 
     def _request(self, method: str, args, timeout: int = 120) -> dict:
         """Call a portal method and wait for its Request's Response signal."""
@@ -371,6 +368,7 @@ class ScreenCast:
         token = "chronoa" + secrets.token_hex(4)
         path = f"/org/freedesktop/portal/desktop/request/{self.sender}/{token}"
         box, loop = {}, GLib.MainLoop()
+        timer = None
 
         def on_response(_c, _s, _p, _i, _sig, params):
             code, results = params.unpack()
@@ -393,10 +391,34 @@ class ScreenCast:
             self.bus.call_sync(
                 *self.PORTAL, self.IFACE, method, variant, None, 0, 10000, None
             )
-            GLib.timeout_add_seconds(timeout, loop.quit)
+
+            def expired():
+                loop.quit()
+                return GLib.SOURCE_REMOVE
+
+            timer = GLib.timeout_add_seconds(timeout, expired)
             loop.run()
         finally:
+            if timer is not None:
+                source = loop.get_context().find_source_by_id(timer)
+                if source is not None:
+                    source.destroy()
             self.bus.signal_unsubscribe(sub)
+            if "code" not in box:
+                try:
+                    self.bus.call_sync(
+                        self.PORTAL[0],
+                        path,
+                        "org.freedesktop.portal.Request",
+                        "Close",
+                        None,
+                        None,
+                        0,
+                        3000,
+                        None,
+                    )
+                except GLib.Error:
+                    logger.debug("could not close screen-share request", exc_info=True)
         if box.get("code") != 0:
             raise RuntimeError(
                 f"screen sharing was not allowed ({'cancelled' if box.get('code') == 1 else 'no answer' if 'code' not in box else 'failed'})"
@@ -418,11 +440,33 @@ class ScreenCast:
         picks which, and only that is shown. `virtual=True` asks the portal
         to extend the desktop with a new output (the `VIRTUAL` source type)
         and stream that; the backend decides the output's size and id.
-        `window` and `virtual` are mutually exclusive - `virtual` wins.
+        `window` and `virtual` are mutually exclusive. Advertising VIRTUAL
+        is not proof of creation: the returned stream must confirm its type.
         """
+        if window and virtual:
+            raise ValueError("Choose either a window or a virtual display, not both")
+        if virtual and not self.supports_virtual():
+            raise RuntimeError(
+                "This desktop's ScreenCast portal does not support virtual displays; "
+                "existing-screen sharing is unchanged"
+            )
+        try:
+            return self._start(window, virtual)
+        except BaseException:
+            self.close()
+            raise
+
+    def _start(self, window: bool, virtual: bool) -> "tuple[int, int]":
         GLib = self.GLib
         res = self._request(
-            "CreateSession", [{"session_handle_token": GLib.Variant("s", "chronoa_s")}]
+            "CreateSession",
+            [
+                {
+                    "session_handle_token": GLib.Variant(
+                        "s", "chronoa_" + secrets.token_hex(4)
+                    )
+                }
+            ],
         )
         self.session = res["session_handle"]
         source_type = (
@@ -444,11 +488,20 @@ class ScreenCast:
         res = self._request(
             "Start", [self.session, "", {}], timeout=180
         )  # the person answers here
-        node = res["streams"][0][0]
+        streams = res.get("streams", [])
+        if len(streams) != 1:
+            raise RuntimeError(
+                "The portal did not return exactly one screen-share stream"
+            )
+        node, properties = streams[0]
+        if virtual and properties.get("source_type") != self.SOURCE_VIRTUAL:
+            raise RuntimeError(
+                "The portal did not confirm a virtual display; refusing to mirror another screen"
+            )
         # The session's own Closed signal, so a share ended from the desktop's
         # sharing indicator is a fact we can report rather than a picture that
         # quietly stops moving.
-        self.bus.signal_subscribe(
+        self._closed_subscription = self.bus.signal_subscribe(
             "org.freedesktop.portal.Desktop",
             "org.freedesktop.portal.Session",
             "Closed",
@@ -469,6 +522,8 @@ class ScreenCast:
             None,
         )
         result, fdlist = fds_out[0], fds_out[1]
+        if fdlist is None:
+            raise RuntimeError("The portal returned no PipeWire file descriptor")
         fd = fdlist.get(result.unpack()[0])
         return fd, int(node)
 
@@ -478,6 +533,9 @@ class ScreenCast:
 
     def close(self) -> None:
         self.closed = True
+        if self._closed_subscription is not None:
+            self.bus.signal_unsubscribe(self._closed_subscription)
+            self._closed_subscription = None
         if self.session:
             try:
                 self.bus.call_sync(
@@ -1481,10 +1539,21 @@ def _arguments(argv=None) -> argparse.Namespace:
         default=0.0,
         help="stop after this many seconds (default: run until Ctrl+C)",
     )
-    parser.add_argument(
+    sources = parser.add_mutually_exclusive_group()
+    sources.add_argument(
         "--window",
         action="store_true",
         help="share one window (the person picks it) instead of a monitor",
+    )
+    sources.add_argument(
+        "--virtual",
+        action="store_true",
+        help="request a virtual display from a supporting portal (view-only; no fallback to mirroring)",
+    )
+    parser.add_argument(
+        "--check-virtual",
+        action="store_true",
+        help="report virtual-display capability without starting a capture or contacting a phone",
     )
     parser.add_argument(
         "--record",
@@ -1500,7 +1569,12 @@ def _arguments(argv=None) -> argparse.Namespace:
         help="let fingers on the phone tap and drag on this computer "
         "(also SHANI_LINK_SCREEN_TOUCH=1)",
     )
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if args.virtual and (args.touch or args.record or args.stills):
+        parser.error(
+            "--virtual is view-only streaming; do not combine it with --touch, --record or --stills"
+        )
+    return args
 
 
 def _input_surfaces(enabled: bool):
@@ -1562,11 +1636,13 @@ def _run(
     keyboard=None,
     sound_sink: str = "",
     window: bool = False,
+    virtual: bool = False,
 ) -> None:
     """Open the portal, serve one stream, and stay until it ends."""
     cast = ScreenCast()
+    fd = None
     try:
-        fd, node = cast.start(window=window)  # the person answers here
+        fd, node = cast.start(virtual=True) if virtual else cast.start(window=window)
         stream = Stream(
             fd,
             node,
@@ -1611,6 +1687,8 @@ def _run(
             server.stop()
     finally:
         cast.close()
+        if fd is not None:
+            os.close(fd)
 
 
 def _record(path: str, window: bool, seconds: float) -> None:
@@ -1753,6 +1831,7 @@ def _serve(
                     keyboard,
                     sound_sink,
                     window,
+                    virtual=args.virtual,
                 )
             except Exception as exc:  # noqa: BLE001 - the portal is a desktop service
                 print(f"Stopping: {_portal_problem(exc)}", flush=True)
@@ -1778,6 +1857,7 @@ def _serve(
             keyboard,
             sound_sink,
             window,
+            virtual=args.virtual,
         )
     except Exception as exc:  # noqa: BLE001
         print(f"Stopping: {_portal_problem(exc)}", flush=True)
@@ -1787,6 +1867,21 @@ def _serve(
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     args = _arguments()
+    if args.check_virtual:
+        try:
+            supported = ScreenCast().supports_virtual()
+        except Exception as exc:
+            print(
+                f"Virtual display support could not be determined: {exc}",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        print(
+            "Virtual displays are advertised by the portal"
+            if supported
+            else "Virtual displays are not supported by this portal"
+        )
+        sys.exit(0 if supported else 1)
     codec = create_codec(args.codec)
     ready, why = gstreamer_ready(args.codec)
     if not ready:
@@ -1811,6 +1906,10 @@ def main() -> None:
         "true",
         "yes",
     )
+    if args.virtual and wanted:
+        sys.exit(
+            "Virtual display touch mapping is not verified; disable SHANI_LINK_SCREEN_TOUCH"
+        )
     surface, pen_surface, keyboard = _input_surfaces(wanted)
     sound = default_sink()
     if sound:

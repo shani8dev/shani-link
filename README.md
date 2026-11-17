@@ -289,15 +289,31 @@ Video is a local socket, not D-Bus: `VideoSocket()` names it; each frame is a
 
 ### A second screen, not yet
 
-This mirrors the screen the computer has; it does not add one. niri cannot
-create a virtual output (niri-wm/niri#3800, open), so there is no second
-desktop to put on the phone. The one route that works on niri is a **VKMS**
-virtual display — a kernel module that creates a real DRM output — and that is
-a DKMS module per running kernel, Secure Boot/MOK enrolment and a polkit policy.
-The project is not taking that in: a module that has to be rebuilt on every
-kernel is not something an OS image can promise. When niri grows virtual
-outputs, the mirror and the touch layer here are already what a second screen
-would need.
+The app mirrors an existing screen or window by default. To inspect the active
+desktop's portal without capturing anything or contacting a phone:
+
+```sh
+python3 -m shani_link.screen_stream --check-virtual
+```
+
+Exit 0 means the portal advertises `VIRTUAL`, 1 means it does not, and 2 means
+the query failed (not proof of unsupported hardware). `AvailableSourceTypes` is
+a bitmask: bit 4 advertises a new virtual monitor.
+
+On a supporting desktop, `--virtual --transport=usb` requests a **view-only**
+virtual-display stream through the same portal and transport. The returned
+stream must identify itself as `VIRTUAL`; an ordinary monitor is never used as
+a silent fallback. The portal owns the output's dimensions and lifetime, and
+closing the session releases it. This is not a verified extended touchscreen:
+uinput-to-output mapping, orientation and window placement still need testing.
+`--touch` (including its environment setting) is therefore refused in this mode.
+
+**Stock Niri remains blocked.** Checked against upstream on 2026-11-17:
+[PR #3800](https://github.com/niri-wm/niri/pull/3800) is open, not merged, and
+upstream IPC has no virtual-output creation action. Its eventual merge does not
+by itself guarantee portal `VIRTUAL` support. Shani Link does not install a fork,
+patch Niri or load a display driver. VKMS is an in-tree Linux driver, not
+inherently a DKMS dependency; using it is outside this software-only route.
 
 Touch and typing are the half that is here: `/dev/uinput`, the `input` group, a
 type-B touchscreen (ShaniOS ships `80-uinput.rules`), a pen and a keyboard. The

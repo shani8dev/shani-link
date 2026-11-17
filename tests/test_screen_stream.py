@@ -326,25 +326,22 @@ def test_virtual_source_type_has_the_spec_value():
     assert ss.ScreenCast.SOURCE_VIRTUAL == 4
 
 
-def test_supports_virtual_is_false_when_portal_answers_nothing(monkeypatch):
+def test_supports_virtual_preserves_a_failed_query(monkeypatch):
     cast = ss.ScreenCast.__new__(ss.ScreenCast)
 
     def boom():
         raise RuntimeError("no portal")
 
     monkeypatch.setattr(cast, "available_source_types", boom)
-    assert cast.supports_virtual() is False
+    with pytest.raises(RuntimeError, match="no portal"):
+        cast.supports_virtual()
 
 
 def test_supports_virtual_is_true_when_virtual_is_offered(monkeypatch):
     cast = ss.ScreenCast.__new__(ss.ScreenCast)
 
     def offers():
-        return [
-            ss.ScreenCast.SOURCE_MONITOR,
-            ss.ScreenCast.SOURCE_WINDOW,
-            ss.ScreenCast.SOURCE_VIRTUAL,
-        ]
+        return 7
 
     monkeypatch.setattr(cast, "available_source_types", offers)
     assert cast.supports_virtual() is True
