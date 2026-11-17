@@ -151,3 +151,28 @@ def test_a_text_is_addressed_by_picking_a_contact(monkeypatch, tmp_path):
     priya.emit("activated")
     assert p.to.get_text() == "+91 99870 33210"
 
+
+
+def test_the_contacts_tab_is_filled_from_the_address_book(monkeypatch, tmp_path):
+    """The tab is built from the shared book, so it has a search box and the
+    people in it - the two things a dialer needs from an address book."""
+    from shani_link import contacts
+    from shani_link import phone as ph
+    from gi.repository import Gtk
+    p = _build(monkeypatch, tmp_path, None, which=None)
+    contacts.book().save(contacts.Contact(full_name="Priya Iyer", phones=[("cell", "+91 99870 33210")]))
+    p.show_tab("contacts")
+    pump(seconds=0.3)
+    view = p.contacts_view
+    view.refresh()          # the tab read the book when it was built, before this save
+    assert view is not None
+    assert view.search.get_text() == ""
+    rows = [c for c in view.entries if "Priya" in c.display_name()]
+    assert rows, [c.display_name() for c in view.entries]
+    view.search.set_text("Priya")
+    view._refilter()
+    assert [c.display_name() for c in view.shown()] == ["Priya Iyer"]
+    view.search.set_text("")
+    view._refilter()
+    # and the actions a contact offers are the ones the page can do
+    assert callable(view.call) and callable(view.message)
