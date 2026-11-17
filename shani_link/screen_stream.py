@@ -88,19 +88,27 @@ def gstreamer_ready(codec: str = "webm") -> "tuple[bool, str]":
     """
     try:
         import gi
+
         gi.require_version("Gst", "1.0")
         from gi.repository import Gst
     except (ImportError, ValueError) as exc:
-        return False, (f"the GStreamer bindings are not here ({exc}); "
-                       f"gstreamer and gst-plugins-good provide them")
+        return False, (
+            f"the GStreamer bindings are not here ({exc}); "
+            f"gstreamer and gst-plugins-good provide them"
+        )
     Gst.init(None)
-    needed = ("pipewiresrc", "vp8enc", "webmmux") if codec == "webm" \
+    needed = (
+        ("pipewiresrc", "vp8enc", "webmmux")
+        if codec == "webm"
         else ("pipewiresrc", "jpegenc")
+    )
     missing = [e for e in needed if Gst.ElementFactory.find(e) is None]
     if missing:
-        return False, (f"gstreamer has no {', '.join(missing)}; "
-                       f"gst-plugins-base, gst-plugins-good and "
-                       f"gst-plugins-bad provide them")
+        return False, (
+            f"gstreamer has no {', '.join(missing)}; "
+            f"gst-plugins-base, gst-plugins-good and "
+            f"gst-plugins-bad provide them"
+        )
     return True, ""
 
 
@@ -115,8 +123,13 @@ def bluetooth_address() -> Optional[str]:
     timeout", and this broke it silently for as long as the module was dead.
     """
     try:
-        out = subprocess.run(["ip", "-4", "-o", "addr", "show"], capture_output=True,
-                             text=True, timeout=10, check=False).stdout
+        out = subprocess.run(
+            ["ip", "-4", "-o", "addr", "show"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        ).stdout
     except (OSError, subprocess.SubprocessError) as exc:
         logger.info("ip addr show did not answer: %s", exc)
         return None
@@ -125,6 +138,7 @@ def bluetooth_address() -> Optional[str]:
 
 
 # --- the phone over adb: which one, what size, one tunnel ---------------------
+
 
 def phone_serial() -> "tuple[str, str]":
     """(serial, problem): the phone to mirror to, or why there is none.
@@ -170,8 +184,12 @@ def choose() -> "tuple[str, str]":
     return "", f"{problem}; and the phone is not sharing its network over Bluetooth"
 
 
-def fit_to_phone(width: int, height: int, max_long_side: int = USB_MAX_LONG_SIDE,
-                 landscape: bool = True) -> "tuple[int, int]":
+def fit_to_phone(
+    width: int,
+    height: int,
+    max_long_side: int = USB_MAX_LONG_SIDE,
+    landscape: bool = True,
+) -> "tuple[int, int]":
     """The phone's size, turned the way it is held and capped for the encoder.
 
     Even dimensions because VP8 (like every H.264 encoder) wants them; turned
@@ -190,7 +208,9 @@ def fit_to_phone(width: int, height: int, max_long_side: int = USB_MAX_LONG_SIDE
 
 def _adb(args, serial: str = "", timeout: int = 10):
     argv = ["adb"] + (["-s", serial] if serial else []) + list(args)
-    return subprocess.run(argv, capture_output=True, text=True, timeout=timeout, check=False)
+    return subprocess.run(
+        argv, capture_output=True, text=True, timeout=timeout, check=False
+    )
 
 
 @contextmanager
@@ -203,6 +223,7 @@ def adb_link(port: int = PORT, serial: str = ""):
     a demo, and a stale `adb reverse` makes the next run look like it works when
     the phone is showing a page from the last one.
     """
+
     def adb_call(args) -> "tuple[bool, str]":
         try:
             done = _adb(args, serial=serial)
@@ -220,22 +241,41 @@ def adb_link(port: int = PORT, serial: str = ""):
     if not bit:
         note = "the phone is on its battery, so its screen may dim while it mirrors"
     original = None
-    got, value = adb_call(["shell", "settings", "get", "global", "stay_on_while_plugged_in"])
+    got, value = adb_call(
+        ["shell", "settings", "get", "global", "stay_on_while_plugged_in"]
+    )
     if bit and got and value.isdigit():
         original = int(value)
-        adb_call(["shell", "settings", "put", "global", "stay_on_while_plugged_in",
-                  str(original | bit)])
+        adb_call(
+            [
+                "shell",
+                "settings",
+                "put",
+                "global",
+                "stay_on_while_plugged_in",
+                str(original | bit),
+            ]
+        )
 
     try:
         yield True, note
     finally:
         if original is not None:
-            adb_call(["shell", "settings", "put", "global", "stay_on_while_plugged_in",
-                      str(original)])
+            adb_call(
+                [
+                    "shell",
+                    "settings",
+                    "put",
+                    "global",
+                    "stay_on_while_plugged_in",
+                    str(original),
+                ]
+            )
         adb_call(["reverse", "--remove", f"tcp:{port}"])
 
 
 # --- what to do when the picture stops ---------------------------------------
+
 
 class Recovery:
     """The ladder when the encoder stops: restart it once, then stop and say why.
@@ -259,15 +299,20 @@ class Recovery:
     def stopped(self, *, session_closed: bool = False) -> "tuple[bool, str]":
         """(restart the encoder?, the sentence for the log and the page)."""
         if session_closed:
-            return False, ("the screen share was ended on this computer; "
-                           "press Start to ask again")
+            return False, (
+                "the screen share was ended on this computer; press Start to ask again"
+            )
         if self.used < self.allowed:
             self.used += 1
-            return True, f"the encoder stopped; restarting it ({self.used} of {self.allowed})"
+            return (
+                True,
+                f"the encoder stopped; restarting it ({self.used} of {self.allowed})",
+            )
         return False, "the encoder stopped twice; press Start to ask again"
 
 
 # --- the portal ------------------------------------------------------------
+
 
 class ScreenCast:
     """One portal session: `start()` -> (pipewire fd, node id). Asks the person once."""
@@ -275,13 +320,50 @@ class ScreenCast:
     PORTAL = ("org.freedesktop.portal.Desktop", "/org/freedesktop/portal/desktop")
     IFACE = "org.freedesktop.portal.ScreenCast"
 
+    #: XDG Desktop Portal source types: 1 monitor, 2 window, 4 virtual output.
+    SOURCE_MONITOR = 1
+    SOURCE_WINDOW = 2
+    SOURCE_VIRTUAL = 4
+
     def __init__(self):
         from gi.repository import Gio, GLib
+
         self.Gio, self.GLib = Gio, GLib
         self.bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
         self.sender = self.bus.get_unique_name().lstrip(":").replace(".", "_")
         self.session = ""
         self.closed = False
+
+    def available_source_types(self) -> "list[int]":
+        """Which source types the portal backend offers (1 monitor, 2 window,
+        4 virtual). Reads the `AvailableSourceTypes` property."""
+        GLib = self.GLib
+        try:
+            result = self.bus.call_sync(
+                *self.PORTAL,
+                "org.freedesktop.DBus.Properties",
+                "Get",
+                GLib.Variant(
+                    "(ss)",
+                    ("org.freedesktop.portal.ScreenCast", "AvailableSourceTypes"),
+                ),
+                None,
+                0,
+                5000,
+                None,
+            )
+        except GLib.Error as exc:
+            raise RuntimeError(
+                f"could not ask the portal what sources it offers ({exc})"
+            )
+        return [int(t) for t in result.unpack()[0].unpack()]
+
+    def supports_virtual(self) -> bool:
+        """True if the portal backend can create a virtual output."""
+        try:
+            return self.SOURCE_VIRTUAL in self.available_source_types()
+        except RuntimeError:
+            return False
 
     def _request(self, method: str, args, timeout: int = 120) -> dict:
         """Call a portal method and wait for its Request's Response signal."""
@@ -294,44 +376,98 @@ class ScreenCast:
             code, results = params.unpack()
             box["code"], box["results"] = code, results
             loop.quit()
-        sub = self.bus.signal_subscribe("org.freedesktop.portal.Desktop", "org.freedesktop.portal.Request",
-                                        "Response", path, None, 0, on_response)
+
+        sub = self.bus.signal_subscribe(
+            "org.freedesktop.portal.Desktop",
+            "org.freedesktop.portal.Request",
+            "Response",
+            path,
+            None,
+            0,
+            on_response,
+        )
         try:
             options = dict(args[-1]) if args else {}
             options["handle_token"] = GLib.Variant("s", token)
             variant = GLib.Variant(self._sig(method), (*args[:-1], options))
-            self.bus.call_sync(*self.PORTAL, self.IFACE, method, variant, None, 0, 10000, None)
+            self.bus.call_sync(
+                *self.PORTAL, self.IFACE, method, variant, None, 0, 10000, None
+            )
             GLib.timeout_add_seconds(timeout, loop.quit)
             loop.run()
         finally:
             self.bus.signal_unsubscribe(sub)
         if box.get("code") != 0:
-            raise RuntimeError(f"screen sharing was not allowed ({'cancelled' if box.get('code') == 1 else 'no answer' if 'code' not in box else 'failed'})")
+            raise RuntimeError(
+                f"screen sharing was not allowed ({'cancelled' if box.get('code') == 1 else 'no answer' if 'code' not in box else 'failed'})"
+            )
         return box["results"]
 
     @staticmethod
     def _sig(method: str) -> str:
-        return {"CreateSession": "(a{sv})", "SelectSources": "(oa{sv})", "Start": "(osa{sv})"}[method]
+        return {
+            "CreateSession": "(a{sv})",
+            "SelectSources": "(oa{sv})",
+            "Start": "(osa{sv})",
+        }[method]
 
-    def start(self, window: bool = False) -> "tuple[int, int]":
-        """Open the portal and take its stream. `window=True` asks for a window
-        instead of a monitor - the person picks which, and only that is shown."""
+    def start(self, window: bool = False, virtual: bool = False) -> "tuple[int, int]":
+        """Open the portal and take its stream.
+
+        `window=True` asks for a window instead of a monitor - the person
+        picks which, and only that is shown. `virtual=True` asks the portal
+        to extend the desktop with a new output (the `VIRTUAL` source type)
+        and stream that; the backend decides the output's size and id.
+        `window` and `virtual` are mutually exclusive - `virtual` wins.
+        """
         GLib = self.GLib
-        res = self._request("CreateSession", [{"session_handle_token": GLib.Variant("s", "chronoa_s")}])
+        res = self._request(
+            "CreateSession", [{"session_handle_token": GLib.Variant("s", "chronoa_s")}]
+        )
         self.session = res["session_handle"]
-        self._request("SelectSources", [self.session, {"types": GLib.Variant("u", 2 if window else 1),
-                                                       "cursor_mode": GLib.Variant("u", 2),    # cursor drawn in
-                                                       "multiple": GLib.Variant("b", False)}])
-        res = self._request("Start", [self.session, "", {}], timeout=180)       # the person answers here
+        source_type = (
+            self.SOURCE_VIRTUAL
+            if virtual
+            else (self.SOURCE_WINDOW if window else self.SOURCE_MONITOR)
+        )
+        self._request(
+            "SelectSources",
+            [
+                self.session,
+                {
+                    "types": GLib.Variant("u", source_type),
+                    "cursor_mode": GLib.Variant("u", 2),  # cursor drawn in
+                    "multiple": GLib.Variant("b", False),
+                },
+            ],
+        )
+        res = self._request(
+            "Start", [self.session, "", {}], timeout=180
+        )  # the person answers here
         node = res["streams"][0][0]
         # The session's own Closed signal, so a share ended from the desktop's
         # sharing indicator is a fact we can report rather than a picture that
         # quietly stops moving.
-        self.bus.signal_subscribe("org.freedesktop.portal.Desktop", "org.freedesktop.portal.Session",
-                                  "Closed", self.session, None, 0, self._on_closed)
+        self.bus.signal_subscribe(
+            "org.freedesktop.portal.Desktop",
+            "org.freedesktop.portal.Session",
+            "Closed",
+            self.session,
+            None,
+            0,
+            self._on_closed,
+        )
         fds_out = self.bus.call_with_unix_fd_list_sync(
-            *self.PORTAL, self.IFACE, "OpenPipeWireRemote", GLib.Variant("(oa{sv})", (self.session, {})),
-            None, 0, 10000, None, None)
+            *self.PORTAL,
+            self.IFACE,
+            "OpenPipeWireRemote",
+            GLib.Variant("(oa{sv})", (self.session, {})),
+            None,
+            0,
+            10000,
+            None,
+            None,
+        )
         result, fdlist = fds_out[0], fds_out[1]
         fd = fdlist.get(result.unpack()[0])
         return fd, int(node)
@@ -344,14 +480,24 @@ class ScreenCast:
         self.closed = True
         if self.session:
             try:
-                self.bus.call_sync("org.freedesktop.portal.Desktop", self.session,
-                                   "org.freedesktop.portal.Session", "Close", None, None, 0, 3000, None)
+                self.bus.call_sync(
+                    "org.freedesktop.portal.Desktop",
+                    self.session,
+                    "org.freedesktop.portal.Session",
+                    "Close",
+                    None,
+                    None,
+                    0,
+                    3000,
+                    None,
+                )
             except Exception:  # noqa: BLE001
                 pass
             self.session = ""
 
 
 # --- codecs ------------------------------------------------------------------
+
 
 def default_sink() -> str:
     """The default audio sink's name, from PipeWire's own metadata (or "").
@@ -360,20 +506,25 @@ def default_sink() -> str:
     does not need `pactl` - which the image does not ship.
     """
     try:
-        out = subprocess.run(["pw-metadata"], capture_output=True, text=True,
-                             timeout=5, check=False).stdout
+        out = subprocess.run(
+            ["pw-metadata"], capture_output=True, text=True, timeout=5, check=False
+        ).stdout
     except (OSError, subprocess.SubprocessError):
         return ""
-    match = re.search(r"key:'default\.audio\.sink'\s+value:'\{\"name\":\"([^\"]+)\"", out)
+    match = re.search(
+        r"key:'default\.audio\.sink'\s+value:'\{\"name\":\"([^\"]+)\"", out
+    )
     return match.group(1) if match else ""
 
 
 def audio_pipeline(sink: str) -> str:
     """Desktop audio as a live Opus stream in WebM, which a browser plays."""
-    return (f"pipewiresrc target-object={sink} do-timestamp=true ! "
-            f"audioconvert ! audioresample ! "
-            f"opusenc bitrate=64000 ! webmmux streamable=true ! "
-            f"appsink name=out emit-signals=true sync=false max-buffers=64 drop=true")
+    return (
+        f"pipewiresrc target-object={sink} do-timestamp=true ! "
+        f"audioconvert ! audioresample ! "
+        f"opusenc bitrate=64000 ! webmmux streamable=true ! "
+        f"appsink name=out emit-signals=true sync=false max-buffers=64 drop=true"
+    )
 
 
 def microphone() -> "tuple[str, str]":
@@ -392,18 +543,24 @@ def microphone() -> "tuple[str, str]":
     module is the system's job.
     """
     from shani_link import audio
+
     index = None
     for props in audio.nodes():
-        found = re.match(r"alsa_input\.platform-snd_aloop\.(\d+)$",
-                         str(props.get("node.name", "")))
+        found = re.match(
+            r"alsa_input\.platform-snd_aloop\.(\d+)$", str(props.get("node.name", ""))
+        )
         if found:
             index = found.group(1)
             break
     if index is None:
-        return "", ("the loopback sound card is not loaded - modprobe snd-aloop "
-                    "(an image loads it from modules-load.d)")
-    return (f"alsa_input.platform-snd_aloop.{index}",
-            f"alsa_output.platform-snd_aloop.{index}")
+        return "", (
+            "the loopback sound card is not loaded - modprobe snd-aloop "
+            "(an image loads it from modules-load.d)"
+        )
+    return (
+        f"alsa_input.platform-snd_aloop.{index}",
+        f"alsa_output.platform-snd_aloop.{index}",
+    )
 
 
 def mic_pipeline(sink: str) -> str:
@@ -413,11 +570,13 @@ def mic_pipeline(sink: str) -> str:
     which `appsrc` wraps as it arrives. A MediaRecorder WebM would need a
     parser and add a chunk of latency to every syllable.
     """
-    return ("appsrc name=mic is-live=true format=time do-timestamp=true "
-            "max-bytes=4194304 ! "
-            "audio/x-raw,format=S16LE,rate=48000,channels=1 ! "
-            "audioconvert ! audioresample ! "
-            f"pipewiresink target-object={sink} sync=false")
+    return (
+        "appsrc name=mic is-live=true format=time do-timestamp=true "
+        "max-bytes=4194304 ! "
+        "audio/x-raw,format=S16LE,rate=48000,channels=1 ! "
+        "audioconvert ! audioresample ! "
+        f"pipewiresink target-object={sink} sync=false"
+    )
 
 
 def camera_pipeline(width: int = 1280, height: int = 720, fps: int = 15) -> str:
@@ -433,12 +592,14 @@ def camera_pipeline(width: int = 1280, height: int = 720, fps: int = 15) -> str:
     encoder is already in gst-plugins-good; `jpegdec` is the cost, a few
     milliseconds a frame.
     """
-    return ("appsrc name=cam is-live=true format=time do-timestamp=true "
-            "max-bytes=4194304 ! image/jpeg ! jpegdec ! videoconvert ! "
-            f"video/x-raw,format=YUY2,width={width},height={height},framerate={fps}/1 ! "
-            "pipewiresink mode=provide "
-            "stream-properties=\"properties,media.class=Video/Source,media.role=Camera\" "
-            "client-name=\"Shani Link Camera\"")
+    return (
+        "appsrc name=cam is-live=true format=time do-timestamp=true "
+        "max-bytes=4194304 ! image/jpeg ! jpegdec ! videoconvert ! "
+        f"video/x-raw,format=YUY2,width={width},height={height},framerate={fps}/1 ! "
+        "pipewiresink mode=provide "
+        'stream-properties="properties,media.class=Video/Source,media.role=Camera" '
+        'client-name="Shani Link Camera"'
+    )
 
 
 class Codec:
@@ -464,10 +625,12 @@ class WebM(Codec):
     content_type = "video/webm"
 
     def pipeline_tail(self, width: int, height: int, fps: int, bitrate: int) -> str:
-        return (f"vp8enc deadline=1 cpu-used=8 target-bitrate={bitrate} "
-                f"keyframe-max-dist={fps * 2} end-usage=cbr ! "
-                f"webmmux streamable=true ! appsink name=out emit-signals=true "
-                f"sync=false max-buffers=64 drop=true")
+        return (
+            f"vp8enc deadline=1 cpu-used=8 target-bitrate={bitrate} "
+            f"keyframe-max-dist={fps * 2} end-usage=cbr ! "
+            f"webmmux streamable=true ! appsink name=out emit-signals=true "
+            f"sync=false max-buffers=64 drop=true"
+        )
 
     def page(self) -> bytes:
         return PAGE_WEBM
@@ -492,15 +655,22 @@ class Mjpeg(Codec):
         self.quality = quality
 
     def pipeline_tail(self, width: int, height: int, fps: int, bitrate: int) -> str:
-        return (f"videoconvert ! jpegenc quality={self.quality} ! "
-                f"appsink name=out emit-signals=true sync=false max-buffers=1 drop=true")
+        return (
+            f"videoconvert ! jpegenc quality={self.quality} ! "
+            f"appsink name=out emit-signals=true sync=false max-buffers=1 drop=true"
+        )
 
     def page(self) -> bytes:
         return PAGE_MJPEG
 
     def frame(self, data: bytes) -> bytes:
-        return (b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: "
-                + str(len(data)).encode("ascii") + b"\r\n\r\n" + data + b"\r\n")
+        return (
+            b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: "
+            + str(len(data)).encode("ascii")
+            + b"\r\n\r\n"
+            + data
+            + b"\r\n"
+        )
 
 
 CODECS = {"webm": WebM, "mjpeg": Mjpeg}
@@ -510,7 +680,9 @@ def create_codec(name: str = "webm") -> Codec:
     try:
         return CODECS[name]()
     except KeyError:
-        raise ValueError(f"unknown codec {name!r}; one of {', '.join(CODECS)}") from None
+        raise ValueError(
+            f"unknown codec {name!r}; one of {', '.join(CODECS)}"
+        ) from None
 
 
 INPUT_CSS = """
@@ -704,37 +876,49 @@ fetch("/info").then((r) => r.json()).then((info) => {
 def _page(media: str, extra_css: str = "") -> bytes:
     """The viewer: the picture, the touch layer, the pen, the typing bar and the
     three devices the phone can lend the desktop."""
-    return ("<!doctype html><html><head>"
-            '<meta name="viewport" content="width=device-width,initial-scale=1">'
-            "<title>Chronoa screen</title><style>"
-            "body{margin:0;background:#000;color:#aaa;font:14px sans-serif}"
-            "video,img{width:100vw;height:100vh;object-fit:contain;display:block}"
-            + extra_css + INPUT_CSS + "</style></head><body>"
-            + media
-            + '<div id="touch"></div>'
-            + '<div id="type"><input id="kind" placeholder="Type on this computer…" '
-              'autocomplete="off" autocapitalize="off" spellcheck="false">'
-              '<button tabindex="-1">·</button></div>'
-            + '<button id="keys" type="button">Type</button>'
-            + '<button id="sound" type="button">Sound on</button>'
-            + '<button id="cam" type="button">Camera on</button>'
-            + '<button id="mic" type="button">Mic on</button>'
-            + '<audio id="sound-el" src="/audio" autoplay></audio>'
-            + "<script>" + INPUT_JS + "</script></body></html>").encode()
+    return (
+        "<!doctype html><html><head>"
+        '<meta name="viewport" content="width=device-width,initial-scale=1">'
+        "<title>Chronoa screen</title><style>"
+        "body{margin:0;background:#000;color:#aaa;font:14px sans-serif}"
+        "video,img{width:100vw;height:100vh;object-fit:contain;display:block}"
+        + extra_css
+        + INPUT_CSS
+        + "</style></head><body>"
+        + media
+        + '<div id="touch"></div>'
+        + '<div id="type"><input id="kind" placeholder="Type on this computer…" '
+        'autocomplete="off" autocapitalize="off" spellcheck="false">'
+        '<button tabindex="-1">·</button></div>'
+        + '<button id="keys" type="button">Type</button>'
+        + '<button id="sound" type="button">Sound on</button>'
+        + '<button id="cam" type="button">Camera on</button>'
+        + '<button id="mic" type="button">Mic on</button>'
+        + '<audio id="sound-el" src="/audio" autoplay></audio>'
+        + "<script>"
+        + INPUT_JS
+        + "</script></body></html>"
+    ).encode()
 
 
-PAGE_WEBM = _page('<video src="/stream" autoplay muted playsinline></video>',
-                  "p{position:fixed;bottom:4px;left:8px;margin:0;z-index:4}")
+PAGE_WEBM = _page(
+    '<video src="/stream" autoplay muted playsinline></video>',
+    "p{position:fixed;bottom:4px;left:8px;margin:0;z-index:4}",
+)
 PAGE_MJPEG = _page('<img src="/stream" alt="This computer screen">')
 
 # --- encoding and serving ------------------------------------------------------
 
-def pipeline_description(fd: int, node: int, width: int, height: int, fps: int,
-                         bitrate: int, codec: Codec) -> str:
-    return (f"pipewiresrc fd={fd} path={node} do-timestamp=true keepalive-time=1000 ! "
-            f"videoconvert ! videoscale ! videorate ! "
-            f"video/x-raw,width={width},height={height},framerate={fps}/1 ! "
-            + codec.pipeline_tail(width, height, fps, bitrate))
+
+def pipeline_description(
+    fd: int, node: int, width: int, height: int, fps: int, bitrate: int, codec: Codec
+) -> str:
+    return (
+        f"pipewiresrc fd={fd} path={node} do-timestamp=true keepalive-time=1000 ! "
+        f"videoconvert ! videoscale ! videorate ! "
+        f"video/x-raw,width={width},height={height},framerate={fps}/1 ! "
+        + codec.pipeline_tail(width, height, fps, bitrate)
+    )
 
 
 def record_pipeline(fd: int, node: int, fps: int, bitrate: int, path: str) -> str:
@@ -745,11 +929,13 @@ def record_pipeline(fd: int, node: int, fps: int, bitrate: int, path: str) -> st
     streamable one the live stream uses, so the file has no seek index until it
     is remuxed - the same bytes, the same players.
     """
-    return (f"pipewiresrc fd={fd} path={node} do-timestamp=true keepalive-time=1000 ! "
-            f"videoconvert ! "
-            f"vp8enc deadline=1 cpu-used=8 target-bitrate={bitrate} "
-            f"keyframe-max-dist={fps * 2} end-usage=cbr ! "
-            f"webmmux streamable=true ! filesink location={path}")
+    return (
+        f"pipewiresrc fd={fd} path={node} do-timestamp=true keepalive-time=1000 ! "
+        f"videoconvert ! "
+        f"vp8enc deadline=1 cpu-used=8 target-bitrate={bitrate} "
+        f"keyframe-max-dist={fps * 2} end-usage=cbr ! "
+        f"webmmux streamable=true ! filesink location={path}"
+    )
 
 
 WS_GUID = b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
@@ -757,7 +943,9 @@ WS_GUID = b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
 def _ws_accept(key: str) -> str:
     """RFC 6455's handshake answer: SHA-1 of the key and the magic, base64."""
-    return base64.b64encode(hashlib.sha1((key + WS_GUID.decode()).encode()).digest()).decode()
+    return base64.b64encode(
+        hashlib.sha1((key + WS_GUID.decode()).encode()).digest()
+    ).decode()
 
 
 def _ws_text(payload: bytes) -> bytes:
@@ -780,9 +968,11 @@ def still_pipeline(fd: int, node: int) -> str:
     window (`--window`): the person picks it, and the picture is exactly that
     window's, not a rectangle of the screen around it.
     """
-    return (f"pipewiresrc fd={fd} path={node} do-timestamp=true keepalive-time=1000 ! "
-            f"videoconvert ! pngenc ! "
-            f"appsink name=shot emit-signals=true sync=false max-buffers=1 drop=true")
+    return (
+        f"pipewiresrc fd={fd} path={node} do-timestamp=true keepalive-time=1000 ! "
+        f"videoconvert ! pngenc ! "
+        f"appsink name=shot emit-signals=true sync=false max-buffers=1 drop=true"
+    )
 
 
 class Stream:
@@ -792,10 +982,17 @@ class Stream:
     can be exercised without a desktop: what it needs to know is one boolean.
     """
 
-    def __init__(self, fd: int, node: int, width: int = BLUETOOTH_WIDTH,
-                 height: int = BLUETOOTH_HEIGHT, fps: int = BLUETOOTH_FPS,
-                 bitrate: int = BLUETOOTH_BITRATE, codec: Optional[Codec] = None,
-                 session_closed=None) -> None:
+    def __init__(
+        self,
+        fd: int,
+        node: int,
+        width: int = BLUETOOTH_WIDTH,
+        height: int = BLUETOOTH_HEIGHT,
+        fps: int = BLUETOOTH_FPS,
+        bitrate: int = BLUETOOTH_BITRATE,
+        codec: Optional[Codec] = None,
+        session_closed=None,
+    ) -> None:
         self.fd, self.node = fd, node
         self.width, self.height = width, height
         self.fps, self.bitrate = fps, bitrate
@@ -818,6 +1015,7 @@ class Mic:
 
     def push(self, data: bytes) -> bool:
         from gi.repository import Gst
+
         with self._lock:
             if self._pipe is None:
                 self._pipe = Gst.parse_launch(mic_pipeline(self.sink))
@@ -828,6 +1026,7 @@ class Mic:
 
     def close(self) -> None:
         from gi.repository import Gst
+
         with self._lock:
             if self._pipe is not None:
                 self._pipe.set_state(Gst.State.NULL)
@@ -848,10 +1047,12 @@ class Camera:
 
     def push(self, jpeg: bytes) -> bool:
         from gi.repository import Gst
+
         with self._lock:
             if self._pipe is None:
                 self._pipe = Gst.parse_launch(
-                    camera_pipeline(self.width, self.height, self.fps))
+                    camera_pipeline(self.width, self.height, self.fps)
+                )
                 self._src = self._pipe.get_by_name("cam")
                 self._pipe.set_state(Gst.State.PLAYING)
             self._src.emit("push-buffer", Gst.Buffer.new_wrapped(jpeg))
@@ -859,6 +1060,7 @@ class Camera:
 
     def close(self) -> None:
         from gi.repository import Gst
+
         with self._lock:
             if self._pipe is not None:
                 self._pipe.set_state(Gst.State.NULL)
@@ -873,10 +1075,19 @@ class StreamServer:
     worse than two that cannot.
     """
 
-    def __init__(self, stream: Stream, host: str, port: int = PORT, on_fatal=None,
-                 touch_surface=None, pen_surface=None, keyboard=None,
-                 sound_sink: str = "", mic_source: str = "",
-                 camera: bool = True) -> None:
+    def __init__(
+        self,
+        stream: Stream,
+        host: str,
+        port: int = PORT,
+        on_fatal=None,
+        touch_surface=None,
+        pen_surface=None,
+        keyboard=None,
+        sound_sink: str = "",
+        mic_source: str = "",
+        camera: bool = True,
+    ) -> None:
         self.stream, self.host, self.port = stream, host, port
         self.on_fatal = on_fatal
         self.touch_surface = touch_surface
@@ -891,8 +1102,10 @@ class StreamServer:
 
     def serve(self) -> None:
         import gi
+
         gi.require_version("Gst", "1.0")
         from gi.repository import Gst
+
         Gst.init(None)
         owner = self
         if owner.mic_source:
@@ -901,9 +1114,12 @@ class StreamServer:
             owner.cam = Camera()
 
         class Handler(BaseHTTPRequestHandler):
-            protocol_version = "HTTP/1.1"          # the WebSocket upgrade is HTTP/1.1
+            protocol_version = "HTTP/1.1"  # the WebSocket upgrade is HTTP/1.1
+
             def log_message(self, fmt, *args):
-                logger.info("screen stream: %s - %s", self.client_address[0], fmt % args)
+                logger.info(
+                    "screen stream: %s - %s", self.client_address[0], fmt % args
+                )
 
             def do_GET(self):
                 if self.path == "/ws":
@@ -913,8 +1129,10 @@ class StreamServer:
                     self.send_response(101)
                     self.send_header("Upgrade", "websocket")
                     self.send_header("Connection", "Upgrade")
-                    self.send_header("Sec-WebSocket-Accept",
-                                     _ws_accept(self.headers.get("Sec-WebSocket-Key") or ""))
+                    self.send_header(
+                        "Sec-WebSocket-Accept",
+                        _ws_accept(self.headers.get("Sec-WebSocket-Key") or ""),
+                    )
                     self.end_headers()
                     self._ws_loop()
                     return
@@ -929,12 +1147,16 @@ class StreamServer:
                 if self.path == "/info":
                     # The page asks before it listens: a stream started without
                     # touch must not swallow taps that were meant for a scroll.
-                    body = json.dumps({"touch": owner.touch_surface is not None,
-                                       "pen": owner.pen_surface is not None,
-                                       "keyboard": owner.keyboard is not None,
-                                       "sound": bool(owner.sound_sink),
-                                       "mic": bool(owner.mic_source),
-                                       "camera": bool(owner.camera)}).encode()
+                    body = json.dumps(
+                        {
+                            "touch": owner.touch_surface is not None,
+                            "pen": owner.pen_surface is not None,
+                            "keyboard": owner.keyboard is not None,
+                            "sound": bool(owner.sound_sink),
+                            "mic": bool(owner.mic_source),
+                            "camera": bool(owner.camera),
+                        }
+                    ).encode()
                     self.send_response(200)
                     self.send_header("Content-Type", "application/json")
                     self.send_header("Content-Length", str(len(body)))
@@ -984,14 +1206,14 @@ class StreamServer:
                     opcode, data = self._ws_read()
                     if opcode is None:
                         return
-                    if opcode == 0x8:                     # close
+                    if opcode == 0x8:  # close
                         try:
                             self.wfile.write(_ws_text(b""))
                             self.wfile.flush()
                         except OSError:
                             pass
                         return
-                    if opcode == 0x9:                     # ping
+                    if opcode == 0x9:  # ping
                         try:
                             self.wfile.write(_ws_text(data))
                             self.wfile.flush()
@@ -1028,7 +1250,7 @@ class StreamServer:
                         frame = self.rfile.read(length)
                     except OSError:
                         return
-                    if not frame:                  # the person turned the camera off
+                    if not frame:  # the person turned the camera off
                         owner.cam.close()
                     else:
                         try:
@@ -1048,7 +1270,7 @@ class StreamServer:
                         chunk = self.rfile.read(length)
                     except OSError:
                         return
-                    if not chunk:                  # the person turned the microphone off
+                    if not chunk:  # the person turned the microphone off
                         owner.mic.close()
                     else:
                         try:
@@ -1060,8 +1282,11 @@ class StreamServer:
                     self.end_headers()
                     return
                 if self.path == "/touch" and owner.touch_surface is not None:
-                    self._read_json(lambda payload: owner.touch_surface.update(
-                        payload.get("points") or []))
+                    self._read_json(
+                        lambda payload: owner.touch_surface.update(
+                            payload.get("points") or []
+                        )
+                    )
                 elif self.path == "/pen" and owner.pen_surface is not None:
                     self._read_json(owner.pen_surface.update)
                 elif self.path == "/key" and owner.keyboard is not None:
@@ -1085,11 +1310,11 @@ class StreamServer:
                     self.send_error(400)
                     return
                 except OSError:
-                    return                       # the phone hung up mid-frame
+                    return  # the phone hung up mid-frame
                 try:
                     apply(payload)
                 except OSError:
-                    return                       # the device went away mid-frame
+                    return  # the device went away mid-frame
                 self.send_response(204)
                 self.end_headers()
 
@@ -1097,10 +1322,17 @@ class StreamServer:
                 """Encode until the viewer leaves, the encoder stops twice, or the share ends."""
                 recovery = Recovery()
                 while True:
-                    pipe = Gst.parse_launch(pipeline_description(
-                        os.dup(owner.stream.fd), owner.stream.node, owner.stream.width,
-                        owner.stream.height, owner.stream.fps, owner.stream.bitrate,
-                        owner.stream.codec))
+                    pipe = Gst.parse_launch(
+                        pipeline_description(
+                            os.dup(owner.stream.fd),
+                            owner.stream.node,
+                            owner.stream.width,
+                            owner.stream.height,
+                            owner.stream.fps,
+                            owner.stream.bitrate,
+                            owner.stream.codec,
+                        )
+                    )
                     sink = pipe.get_by_name("out")
                     stop = threading.Event()
 
@@ -1109,7 +1341,9 @@ class StreamServer:
                         ok, info = buf.map(Gst.MapFlags.READ)
                         if ok:
                             try:
-                                self.wfile.write(owner.stream.codec.frame(bytes(info.data)))
+                                self.wfile.write(
+                                    owner.stream.codec.frame(bytes(info.data))
+                                )
                                 recovery.playing()
                             except OSError:
                                 stop.set()
@@ -1122,15 +1356,21 @@ class StreamServer:
                     reason = None
                     while not stop.wait(0.5):
                         message = pipe.get_bus().pop_filtered(
-                            Gst.MessageType.ERROR | Gst.MessageType.EOS)
+                            Gst.MessageType.ERROR | Gst.MessageType.EOS
+                        )
                         if message is None:
                             continue
-                        reason = (message.parse_error()[0].message
-                                  if message.type == Gst.MessageType.ERROR else "EOS")
+                        reason = (
+                            message.parse_error()[0].message
+                            if message.type == Gst.MessageType.ERROR
+                            else "EOS"
+                        )
                         break
                     pipe.set_state(Gst.State.NULL)
                     if reason is None:
-                        logger.info("screen stream: viewer %s left", self.client_address[0])
+                        logger.info(
+                            "screen stream: viewer %s left", self.client_address[0]
+                        )
                         return
                     closed = bool(owner.stream.session_closed())
                     restart, said = recovery.stopped(session_closed=closed)
@@ -1167,11 +1407,15 @@ class StreamServer:
                     reason = None
                     while not stop.wait(0.5):
                         message = pipe.get_bus().pop_filtered(
-                            Gst.MessageType.ERROR | Gst.MessageType.EOS)
+                            Gst.MessageType.ERROR | Gst.MessageType.EOS
+                        )
                         if message is None:
                             continue
-                        reason = (message.parse_error()[0].message
-                                  if message.type == Gst.MessageType.ERROR else "EOS")
+                        reason = (
+                            message.parse_error()[0].message
+                            if message.type == Gst.MessageType.ERROR
+                            else "EOS"
+                        )
                         break
                     pipe.set_state(Gst.State.NULL)
                     if reason is None:
@@ -1198,6 +1442,7 @@ class StreamServer:
 
 # --- starting one -------------------------------------------------------------
 
+
 def pick_transport(requested: str) -> str:
     """Which road to take: the one asked for, or the best there is.
 
@@ -1215,23 +1460,46 @@ def pick_transport(requested: str) -> str:
 
 
 def _arguments(argv=None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Show this computer's screen on the phone.")
-    parser.add_argument("--transport", choices=("auto", "usb", "wifi", "bluetooth"),
-                        default="auto",
-                        help="how to carry the picture (default: adb, by cable or Wi-Fi, when a phone is there)")
-    parser.add_argument("--codec", choices=tuple(CODECS), default="webm",
-                        help="webm (a <video>) or mjpeg (an <img>, no JavaScript)")
-    parser.add_argument("--seconds", type=float, default=0.0,
-                        help="stop after this many seconds (default: run until Ctrl+C)")
-    parser.add_argument("--window", action="store_true",
-                        help="share one window (the person picks it) instead of a monitor")
-    parser.add_argument("--record", metavar="FILE",
-                        help="record the portal's stream to FILE (webm) and exit")
-    parser.add_argument("--stills", metavar="FILE",
-                        help="save one frame to FILE (png) and exit")
-    parser.add_argument("--touch", action="store_true",
-                        help="let fingers on the phone tap and drag on this computer "
-                             "(also SHANI_LINK_SCREEN_TOUCH=1)")
+    parser = argparse.ArgumentParser(
+        description="Show this computer's screen on the phone."
+    )
+    parser.add_argument(
+        "--transport",
+        choices=("auto", "usb", "wifi", "bluetooth"),
+        default="auto",
+        help="how to carry the picture (default: adb, by cable or Wi-Fi, when a phone is there)",
+    )
+    parser.add_argument(
+        "--codec",
+        choices=tuple(CODECS),
+        default="webm",
+        help="webm (a <video>) or mjpeg (an <img>, no JavaScript)",
+    )
+    parser.add_argument(
+        "--seconds",
+        type=float,
+        default=0.0,
+        help="stop after this many seconds (default: run until Ctrl+C)",
+    )
+    parser.add_argument(
+        "--window",
+        action="store_true",
+        help="share one window (the person picks it) instead of a monitor",
+    )
+    parser.add_argument(
+        "--record",
+        metavar="FILE",
+        help="record the portal's stream to FILE (webm) and exit",
+    )
+    parser.add_argument(
+        "--stills", metavar="FILE", help="save one frame to FILE (png) and exit"
+    )
+    parser.add_argument(
+        "--touch",
+        action="store_true",
+        help="let fingers on the phone tap and drag on this computer "
+        "(also SHANI_LINK_SCREEN_TOUCH=1)",
+    )
     return parser.parse_args(argv)
 
 
@@ -1274,29 +1542,56 @@ def _portal_problem(exc: BaseException) -> str:
     """What the portal's refusal means, in a sentence somebody can act on."""
     said = str(exc)
     if "ScreenCast" in said and ("No such interface" in said or "not provided" in said):
-        return ("this desktop has no screen-share portal - install "
-                "xdg-desktop-portal-gnome (or xdg-desktop-portal-gtk) and try again")
+        return (
+            "this desktop has no screen-share portal - install "
+            "xdg-desktop-portal-gnome (or xdg-desktop-portal-gtk) and try again"
+        )
     return f"the portal refused ({said})"
 
 
-def _run(host: str, width: int, height: int, fps: int, bitrate: int, codec: Codec,
-         seconds: float = 0.0, touch_surface=None, pen_surface=None, keyboard=None,
-         sound_sink: str = "", window: bool = False) -> None:
+def _run(
+    host: str,
+    width: int,
+    height: int,
+    fps: int,
+    bitrate: int,
+    codec: Codec,
+    seconds: float = 0.0,
+    touch_surface=None,
+    pen_surface=None,
+    keyboard=None,
+    sound_sink: str = "",
+    window: bool = False,
+) -> None:
     """Open the portal, serve one stream, and stay until it ends."""
     cast = ScreenCast()
     try:
-        fd, node = cast.start(window=window)                  # the person answers here
-        stream = Stream(fd, node, width, height, fps, bitrate, codec,
-                        session_closed=lambda: cast.closed)
+        fd, node = cast.start(window=window)  # the person answers here
+        stream = Stream(
+            fd,
+            node,
+            width,
+            height,
+            fps,
+            bitrate,
+            codec,
+            session_closed=lambda: cast.closed,
+        )
         done = threading.Event()
 
         def fatal(said: str) -> None:
             print(f"Stopping: {said}", flush=True)
             done.set()
 
-        server = StreamServer(stream, host, on_fatal=fatal, touch_surface=touch_surface,
-                              pen_surface=pen_surface, keyboard=keyboard,
-                              sound_sink=sound_sink)
+        server = StreamServer(
+            stream,
+            host,
+            on_fatal=fatal,
+            touch_surface=touch_surface,
+            pen_surface=pen_surface,
+            keyboard=keyboard,
+            sound_sink=sound_sink,
+        )
         threading.Thread(target=server.serve, daemon=True, name="screen-stream").start()
         print(f"Open http://{host}:{PORT} on the phone", flush=True)
         timer = None
@@ -1321,26 +1616,37 @@ def _run(host: str, width: int, height: int, fps: int, bitrate: int, codec: Code
 def _record(path: str, window: bool, seconds: float) -> None:
     """Record the portal's stream to a file, and stop when the person does."""
     import gi
+
     gi.require_version("Gst", "1.0")
     from gi.repository import Gst
+
     Gst.init(None)
     cast = ScreenCast()
     try:
-        fd, node = cast.start(window=window)                  # the person answers here
-        pipe = Gst.parse_launch(record_pipeline(fd, node, BLUETOOTH_FPS, BLUETOOTH_BITRATE, path))
+        fd, node = cast.start(window=window)  # the person answers here
+        pipe = Gst.parse_launch(
+            record_pipeline(fd, node, BLUETOOTH_FPS, BLUETOOTH_BITRATE, path)
+        )
         pipe.set_state(Gst.State.PLAYING)
         print(f"Recording to {path}", flush=True)
-        deadline = None if seconds <= 0 else threading.Timer(seconds, lambda: pipe.send_event(
-            Gst.Event.new_eos()))
+        deadline = (
+            None
+            if seconds <= 0
+            else threading.Timer(seconds, lambda: pipe.send_event(Gst.Event.new_eos()))
+        )
         if deadline is not None:
             deadline.start()
         try:
             while True:
-                message = pipe.get_bus().timed_pop_filtered(500 * Gst.MSECOND,
-                                                            Gst.MessageType.ERROR | Gst.MessageType.EOS)
+                message = pipe.get_bus().timed_pop_filtered(
+                    500 * Gst.MSECOND, Gst.MessageType.ERROR | Gst.MessageType.EOS
+                )
                 if message is not None:
                     if message.type == Gst.MessageType.ERROR:
-                        print(f"Recording failed: {message.parse_error()[0].message}", flush=True)
+                        print(
+                            f"Recording failed: {message.parse_error()[0].message}",
+                            flush=True,
+                        )
                     break
                 if cast.closed:
                     print("The screen share ended on this computer.", flush=True)
@@ -1359,12 +1665,14 @@ def _record(path: str, window: bool, seconds: float) -> None:
 def _stills(path: str, window: bool) -> None:
     """Save one frame as a PNG, and stop."""
     import gi
+
     gi.require_version("Gst", "1.0")
     from gi.repository import GLib, Gst
+
     Gst.init(None)
     cast = ScreenCast()
     try:
-        fd, node = cast.start(window=window)                  # the person answers here
+        fd, node = cast.start(window=window)  # the person answers here
         pipe = Gst.parse_launch(still_pipeline(fd, node))
         sink = pipe.get_by_name("shot")
         loop = GLib.MainLoop()
@@ -1408,8 +1716,15 @@ def _stills(path: str, window: bool) -> None:
         cast.close()
 
 
-def _serve(args: argparse.Namespace, codec: Codec, surface, pen_surface, keyboard,
-           sound_sink: str = "", window: bool = False) -> None:
+def _serve(
+    args: argparse.Namespace,
+    codec: Codec,
+    surface,
+    pen_surface,
+    keyboard,
+    sound_sink: str = "",
+    window: bool = False,
+) -> None:
     transport = pick_transport(args.transport)
 
     if transport in ("usb", "wifi"):
@@ -1425,8 +1740,20 @@ def _serve(args: argparse.Namespace, codec: Codec, surface, pen_surface, keyboar
             if note:
                 print(note, flush=True)
             try:
-                _run(USB_HOST, width, height, USB_FPS, USB_BITRATE, codec, args.seconds,
-                     surface, pen_surface, keyboard, sound_sink, window)
+                _run(
+                    USB_HOST,
+                    width,
+                    height,
+                    USB_FPS,
+                    USB_BITRATE,
+                    codec,
+                    args.seconds,
+                    surface,
+                    pen_surface,
+                    keyboard,
+                    sound_sink,
+                    window,
+                )
             except Exception as exc:  # noqa: BLE001 - the portal is a desktop service
                 print(f"Stopping: {_portal_problem(exc)}", flush=True)
                 sys.exit(1)
@@ -1434,10 +1761,24 @@ def _serve(args: argparse.Namespace, codec: Codec, surface, pen_surface, keyboar
 
     host = bluetooth_address()
     if host is None:
-        sys.exit("No Bluetooth network: turn on Bluetooth tethering on the phone and connect to it first.")
+        sys.exit(
+            "No Bluetooth network: turn on Bluetooth tethering on the phone and connect to it first."
+        )
     try:
-        _run(host, BLUETOOTH_WIDTH, BLUETOOTH_HEIGHT, BLUETOOTH_FPS, BLUETOOTH_BITRATE,
-             codec, args.seconds, surface, pen_surface, keyboard, sound_sink, window)
+        _run(
+            host,
+            BLUETOOTH_WIDTH,
+            BLUETOOTH_HEIGHT,
+            BLUETOOTH_FPS,
+            BLUETOOTH_BITRATE,
+            codec,
+            args.seconds,
+            surface,
+            pen_surface,
+            keyboard,
+            sound_sink,
+            window,
+        )
     except Exception as exc:  # noqa: BLE001
         print(f"Stopping: {_portal_problem(exc)}", flush=True)
         sys.exit(1)
@@ -1465,7 +1806,11 @@ def main() -> None:
         _stills(path, args.window)
         return
 
-    wanted = args.touch or os.environ.get("SHANI_LINK_SCREEN_TOUCH", "").lower() in ("1", "true", "yes")
+    wanted = args.touch or os.environ.get("SHANI_LINK_SCREEN_TOUCH", "").lower() in (
+        "1",
+        "true",
+        "yes",
+    )
     surface, pen_surface, keyboard = _input_surfaces(wanted)
     sound = default_sink()
     if sound:

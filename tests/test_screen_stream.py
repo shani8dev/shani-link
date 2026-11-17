@@ -6,6 +6,7 @@ here are the ones the server consults. The server itself needs a desktop (a
 PipeWire stream and a portal session to answer), which is exactly why every
 decision it makes was moved out of it.
 """
+
 import os
 import stat
 
@@ -15,6 +16,7 @@ from shani_link import screen_stream as ss
 
 
 # --- the size the phone gets -------------------------------------------------
+
 
 def test_fit_to_phone_turns_caps_and_makes_even():
     # 1080x2400 is portrait; the desktop goes in the long way round, and the
@@ -32,6 +34,7 @@ def test_fit_to_phone_turns_caps_and_makes_even():
 
 # --- which road --------------------------------------------------------------
 
+
 def test_choose_prefers_adb(monkeypatch):
     monkeypatch.setattr(ss, "phone_serial", lambda: ("R5CT10", ""))
     monkeypatch.setattr(ss, "bluetooth_address", lambda: "192.168.44.2")
@@ -45,7 +48,9 @@ def test_a_phone_on_wi_fi_is_its_own_road(monkeypatch):
 
 
 def test_without_adb_bluetooth_is_still_offered(monkeypatch):
-    monkeypatch.setattr(ss, "phone_serial", lambda: ("", "no Android device is connected"))
+    monkeypatch.setattr(
+        ss, "phone_serial", lambda: ("", "no Android device is connected")
+    )
     monkeypatch.setattr(ss, "bluetooth_address", lambda: "192.168.44.2")
     assert ss.choose() == ("bluetooth", f"192.168.44.2:{ss.PORT}")
 
@@ -53,14 +58,24 @@ def test_without_adb_bluetooth_is_still_offered(monkeypatch):
 def test_a_cable_wins_over_a_wireless_phone(monkeypatch):
     """Faster, and it does not go away when the Wi-Fi does."""
     from shani_link import android
-    monkeypatch.setattr(android, "_devices", lambda: [("R5CT10", "device", "Pixel 8"),
-                                                      ("192.168.1.20:41000", "device", "Pixel 8")])
+
+    monkeypatch.setattr(
+        android,
+        "_devices",
+        lambda: [
+            ("R5CT10", "device", "Pixel 8"),
+            ("192.168.1.20:41000", "device", "Pixel 8"),
+        ],
+    )
     assert ss.phone_serial() == ("R5CT10", "")
 
 
 def test_two_phones_on_cables_are_a_question_for_the_person(monkeypatch):
     from shani_link import android
-    monkeypatch.setattr(android, "_devices", lambda: [("A", "device", ""), ("B", "device", "")])
+
+    monkeypatch.setattr(
+        android, "_devices", lambda: [("A", "device", ""), ("B", "device", "")]
+    )
     serial, problem = ss.phone_serial()
     assert serial == "" and "unplug one" in problem, problem
 
@@ -76,7 +91,9 @@ def test_the_page_can_settle_the_road_for_the_stream(monkeypatch):
 
 
 def test_a_wireless_phone_with_no_bluetooth_says_what_is_missing(monkeypatch):
-    monkeypatch.setattr(ss, "phone_serial", lambda: ("", "no Android device is connected"))
+    monkeypatch.setattr(
+        ss, "phone_serial", lambda: ("", "no Android device is connected")
+    )
     monkeypatch.setattr(ss, "bluetooth_address", lambda: None)
     transport, why = ss.choose()
     assert transport == ""
@@ -126,7 +143,8 @@ def _battery(adb, tmp_path, text):
     path = tmp_path / "bin" / "adb"
     script = path.read_text().replace(
         "Current Battery Service state:\\n  AC powered: false\\n  USB powered: true\\n  level: 76\\n",
-        text)
+        text,
+    )
     path.write_text(script)
 
 
@@ -138,26 +156,41 @@ def test_adb_link_opens_the_tunnel_and_keeps_the_phone_awake(adb):
     assert calls[0] == "reverse tcp:8090 tcp:8090", calls
     # the phone says it is on USB, so the USB bit is the one set; the AC bit is kept
     assert "shell settings put global stay_on_while_plugged_in 3" in calls, calls
-    assert calls[-2:] == ["shell settings put global stay_on_while_plugged_in 1",
-                          "reverse --remove tcp:8090"], calls
+    assert calls[-2:] == [
+        "shell settings put global stay_on_while_plugged_in 1",
+        "reverse --remove tcp:8090",
+    ], calls
 
 
-def test_a_phone_on_a_wireless_charger_gets_the_wireless_bit(adb, tmp_path, monkeypatch):
+def test_a_phone_on_a_wireless_charger_gets_the_wireless_bit(
+    adb, tmp_path, monkeypatch
+):
     monkeypatch.setenv("STAY_ON", "0")
-    _battery(adb, tmp_path, 'Current Battery Service state:\\n  Wireless powered: true\\n  level: 88\\n')
+    _battery(
+        adb,
+        tmp_path,
+        "Current Battery Service state:\\n  Wireless powered: true\\n  level: 88\\n",
+    )
     with ss.adb_link(ss.PORT) as (ok, _note):
         assert ok
-    assert "shell settings put global stay_on_while_plugged_in 4" in adb.read_text(), \
+    assert "shell settings put global stay_on_while_plugged_in 4" in adb.read_text(), (
         "a Qi pad is the wireless bit, not the USB one"
+    )
 
 
 def test_a_phone_on_its_battery_is_told_it_may_dim(adb, tmp_path):
-    _battery(adb, tmp_path, 'Current Battery Service state:\\n  AC powered: false\\n  level: 42\\n')
+    _battery(
+        adb,
+        tmp_path,
+        "Current Battery Service state:\\n  AC powered: false\\n  level: 42\\n",
+    )
     with ss.adb_link(ss.PORT) as (ok, note):
         assert ok
         assert "may dim" in note, note
     calls = adb.read_text().splitlines()
-    assert not any("stay_on_while_plugged_in" in call and "put" in call for call in calls), calls
+    assert not any(
+        "stay_on_while_plugged_in" in call and "put" in call for call in calls
+    ), calls
 
 
 def test_a_phone_that_never_set_stay_awake_is_left_alone(adb, monkeypatch):
@@ -165,7 +198,9 @@ def test_a_phone_that_never_set_stay_awake_is_left_alone(adb, monkeypatch):
     with ss.adb_link(ss.PORT) as (ok, _note):
         assert ok
     calls = adb.read_text().splitlines()
-    assert not any("stay_on_while_plugged_in" in call and "put" in call for call in calls), calls
+    assert not any(
+        "stay_on_while_plugged_in" in call and "put" in call for call in calls
+    ), calls
     assert calls[-1] == "reverse --remove tcp:8090"
 
 
@@ -194,6 +229,7 @@ def test_this_machine_lists_the_phone_as_ready_through_the_engine(adb):
 
 # --- when the picture stops ---------------------------------------------------
 
+
 def test_recovery_restarts_once_then_stops():
     recovery = ss.Recovery()
     restart, said = recovery.stopped()
@@ -218,10 +254,13 @@ def test_a_share_the_person_ended_is_never_restarted():
 
 # --- codecs ------------------------------------------------------------------
 
+
 def test_mjpeg_frames_are_bounded_parts():
     body = b"\xff\xd8jpeg"
     frame = ss.Mjpeg().frame(body)
-    assert frame.startswith(b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: 6\r\n\r\n")
+    assert frame.startswith(
+        b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: 6\r\n\r\n"
+    )
     assert frame.endswith(b"\r\n") and frame.rstrip(b"\r\n").endswith(body)
 
 
@@ -235,7 +274,9 @@ def test_the_pipeline_is_the_size_we_asked_for_and_the_codec_we_chose():
     assert "pipewiresrc fd=7 path=42" in webm
     assert "width=1920,height=1080,framerate=24/1" in webm
     assert "vp8enc" in webm and "webmmux streamable=true" in webm
-    mjpeg = ss.pipeline_description(7, 42, 1920, 1080, 24, 4_000_000, ss.Mjpeg(quality=55))
+    mjpeg = ss.pipeline_description(
+        7, 42, 1920, 1080, 24, 4_000_000, ss.Mjpeg(quality=55)
+    )
     assert "jpegenc quality=55" in mjpeg and "vp8enc" not in mjpeg
 
 
@@ -250,8 +291,10 @@ def test_an_unknown_codec_is_a_refusal_that_names_the_ones_there_are():
 
 def test_a_desktop_without_a_portal_says_which_package():
     """A raw GDBus traceback in the log tells nobody what to install."""
-    no_portal = ('GDBus.Error:org.freedesktop.DBus.Error.UnknownMethod: No such interface '
-                 '“org.freedesktop.portal.ScreenCast” on object at path /org/freedesktop/portal/desktop')
+    no_portal = (
+        "GDBus.Error:org.freedesktop.DBus.Error.UnknownMethod: No such interface "
+        "“org.freedesktop.portal.ScreenCast” on object at path /org/freedesktop/portal/desktop"
+    )
     said = ss._portal_problem(RuntimeError(no_portal))
     assert "xdg-desktop-portal" in said, said
     assert "refused" in ss._portal_problem(RuntimeError("the person said no"))
@@ -260,12 +303,56 @@ def test_a_desktop_without_a_portal_says_which_package():
 def test_a_missing_element_is_named_for_each_road(monkeypatch):
     """The reason has to name the package's own element, not the portal's refusal."""
     import gi
+
     gi.require_version("Gst", "1.0")
     pytest.importorskip("gi")
     from gi.repository import Gst
+
     Gst.init(None)
     real = Gst.ElementFactory.find
-    monkeypatch.setattr(Gst.ElementFactory, "find",
-                        lambda name: None if name == "jpegenc" else real(name))
+    monkeypatch.setattr(
+        Gst.ElementFactory,
+        "find",
+        lambda name: None if name == "jpegenc" else real(name),
+    )
     ok, why = ss.gstreamer_ready("mjpeg")
     assert not ok and "jpegenc" in why, why
+
+
+# --- virtual output -----------------------------------------------------------
+
+
+def test_virtual_source_type_has_the_spec_value():
+    assert ss.ScreenCast.SOURCE_VIRTUAL == 4
+
+
+def test_supports_virtual_is_false_when_portal_answers_nothing(monkeypatch):
+    cast = ss.ScreenCast.__new__(ss.ScreenCast)
+
+    def boom():
+        raise RuntimeError("no portal")
+
+    monkeypatch.setattr(cast, "available_source_types", boom)
+    assert cast.supports_virtual() is False
+
+
+def test_supports_virtual_is_true_when_virtual_is_offered(monkeypatch):
+    cast = ss.ScreenCast.__new__(ss.ScreenCast)
+
+    def offers():
+        return [
+            ss.ScreenCast.SOURCE_MONITOR,
+            ss.ScreenCast.SOURCE_WINDOW,
+            ss.ScreenCast.SOURCE_VIRTUAL,
+        ]
+
+    monkeypatch.setattr(cast, "available_source_types", offers)
+    assert cast.supports_virtual() is True
+
+
+def test_start_accepts_virtual_keyword():
+    import inspect
+
+    sig = inspect.signature(ss.ScreenCast.start)
+    assert "virtual" in sig.parameters
+    assert sig.parameters["virtual"].default is False
