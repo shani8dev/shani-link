@@ -163,9 +163,11 @@ def surface(title: str, subtitle: str = "",
     would stack bars. The page is a vertical box: the subtitle, then the content.
     `page.title` is kept for whoever shows it.
     """
-    page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0, vexpand=True)
+    page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
     page.title = title
-    inner = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0, vexpand=True)
+    # The scroller below owns expansion; expanding this box too lets a short
+    # page stretch to the window and leaves empty space under its last row.
+    inner = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
     if subtitle:
         note = Gtk.Label(label=subtitle)
         note.add_css_class("dim-label")
@@ -176,7 +178,7 @@ def surface(title: str, subtitle: str = "",
         note.set_margin_top(8)
         note.set_margin_start(12)
         note.set_margin_end(12)
-        shell = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0, vexpand=True)
+        shell = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         shell.append(note)
         shell.append(inner)
         page.append(_clamped(shell, max_width) if adw_ready() else shell)
@@ -508,13 +510,38 @@ def details(title: str, text: str) -> Gtk.Widget:
 
 
 def scrolled(child: Gtk.Widget, max_content_height: int = 0) -> Gtk.Widget:
-    window = Gtk.ScrolledWindow(vexpand=True)
-    window.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+    """Wrap a page body in the one scroller it needs.
+
+    A short page must stay content-sized: expanding every scroller fills the
+    window with empty space and gives a scrollbar to a page that already fits.
+    A page that already contains a scroller owns its scrolling; wrapping it
+    again makes wheel/touch scrolling move both the list and the page.
+    """
     if max_content_height:
+        window = Gtk.ScrolledWindow(vexpand=True)
+        window.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
         window.set_max_content_height(max_content_height)
         window.set_propagate_natural_height(True)
+        window.set_child(child)
+        return window
+    if _contains_scroller(child):
+        return child
+    window = Gtk.ScrolledWindow()
+    window.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+    window.set_propagate_natural_height(True)
     window.set_child(child)
     return window
+
+
+def _contains_scroller(widget: Gtk.Widget) -> bool:
+    child = widget.get_first_child()
+    while child is not None:
+        if isinstance(child, Gtk.ScrolledWindow):
+            return True
+        if _contains_scroller(child):
+            return True
+        child = child.get_next_sibling()
+    return False
 
 
 def page_body(margin: int = 0) -> Gtk.Box:

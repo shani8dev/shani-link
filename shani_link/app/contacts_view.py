@@ -211,7 +211,10 @@ class ContactsView:
         self.list.set_sort_func(self._order)
         self.list.set_header_func(self._header)
         self.list.connect("row-activated", lambda _l, row: self._activated(row))
-        box.append(self.list)
+        self.scroller = Gtk.ScrolledWindow(vexpand=True)
+        self.scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        self.scroller.set_child(self.list)
+        box.append(self.scroller)
         self.empty = _label("", "dim-label")
         self.empty.set_xalign(0.5)
         box.append(self.empty)
@@ -287,6 +290,7 @@ class ContactsView:
             self.empty.set_text("")
         self.empty.set_visible(bool(self.empty.get_text()))
         self.list.set_visible(bool(shown))
+        self.scroller.set_visible(bool(shown))
 
     def shown(self) -> List[ct.Contact]:
         """The contacts the list shows now, in its order (searched and sorted)."""

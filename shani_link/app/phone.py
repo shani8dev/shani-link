@@ -339,7 +339,7 @@ stackswitcher button {
                                      ("files", "Files", self.files_tab),
                                      ("remote", "Remote", self.remote_tab)):
             stack.add_titled(builder(), name, title)
-        self.toasts = Adw.ToastOverlay(child=common.scrolled(body))
+        self.toasts = Adw.ToastOverlay(child=body)
         set_content(self.toasts)
         self._follow_call_log()
         self.find_phone()
