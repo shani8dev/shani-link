@@ -22,3 +22,11 @@ everything it does is reachable over its D-Bus API.
 - **Moving a module here from Chronoa:** bring its engine tests, cut its imports
   of Chronoa (helpers are re-implemented small, not imported), expose it on the
   bus, then switch Chronoa's callers to the bus in the same change.
+
+## Shared architecture (all repos)
+
+One implementation per capability, logic out of UI code, every UI and the
+assistant built on the same services: the plan is `../shani-shell/docs/SHARED-ARCHITECTURE.md`, and this
+repo's part is `docs/SHARED-PLAN.md`. Read both before changing a backend, a
+CLI, a device engine or a settings page, and do as much of this repo's part
+as your task allows.
